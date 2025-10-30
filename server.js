@@ -424,6 +424,72 @@ app.get('/api/faktury/search', authenticateApiKey, async (req, res) => {
   }
 });
 
+// GET /api/faktury/nezaplatene-compact - Kompaktný zoznam nezaplatených faktúr (MUSÍ BYŤ PRED /:cislo!)
+app.get('/api/faktury/nezaplatene-compact', authenticateApiKey, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100; // Default 100 faktúr
+    const po_splatnosti = req.query.po_splatnosti === 'true';
+    
+    const sheets = await getGoogleSheetsClient();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Data!A:AW",
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length <= 1) {
+      return res.json({ status: 'OK', data: [], count: 0 });
+    }
+
+    let faktury = rows.slice(1)
+      .filter(row => row[COLUMNS.CISLO])
+      .map(row => rowToFaktura(row))
+      .filter(f => !f.datum_uhrady || f.datum_uhrady === ''); // Iba nezaplatené
+
+    // Filter po splatnosti ak je požadované
+    if (po_splatnosti) {
+      const dnes = new Date();
+      faktury = faktury.filter(f => {
+        if (!f.datum_splatnosti) return false;
+        const isoSplatnost = parseSlovakDate(f.datum_splatnosti);
+        if (!isoSplatnost) return false;
+        const datumSplatnosti = new Date(isoSplatnost);
+        return dnes > datumSplatnosti;
+      });
+    }
+
+    // Zoraď podľa dátumu splatnosti (najstaršie prvé)
+    faktury.sort((a, b) => {
+      if (!a.datum_splatnosti) return 1;
+      if (!b.datum_splatnosti) return -1;
+      return a.datum_splatnosti.localeCompare(b.datum_splatnosti);
+    });
+
+    // Limituj počet a vráť iba základné údaje
+    const data = faktury.slice(0, limit).map(f => ({
+      cislo: f.cislo,
+      partner: f.partner,
+      datum_vystavenia: f.datum_vystavenia,
+      datum_splatnosti: f.datum_splatnosti,
+      celkom_s_dph: f.celkom_s_dph,
+      vystavil: f.vystavil,
+      mena: f.mena
+    }));
+
+    res.json({ 
+      status: 'OK', 
+      data, 
+      count: data.length,
+      total: faktury.length 
+    });
+  } catch (error) {
+    console.error('Error in GET /api/faktury/nezaplatene-compact:', error);
+    res.status(500).json({ status: 'ERROR', message: error.message });
+  }
+});
+
 // GET /api/faktury/:cislo - Detail faktúry
 app.get('/api/faktury/:cislo', authenticateApiKey, async (req, res) => {
   try {
@@ -640,6 +706,29 @@ app.get('/api/statistiky', authenticateApiKey, async (req, res) => {
     const nezaplatene_pocet = nezaplatene.length;
     const nezaplatene_suma = nezaplatene.reduce((sum, f) => sum + f.celkom_s_dph, 0);
 
+    // Rozdeľ nezaplatené na pred a po splatnosti
+    const dnes = new Date();
+    let nezaplatene_pred_splatnostou = 0;
+    let nezaplatene_pred_splatnostou_suma = 0;
+    let nezaplatene_po_splatnosti = 0;
+    let nezaplatene_po_splatnosti_suma = 0;
+
+    nezaplatene.forEach(f => {
+      if (f.datum_splatnosti) {
+        const isoSplatnost = parseSlovakDate(f.datum_splatnosti);
+        if (isoSplatnost) {
+          const datumSplatnosti = new Date(isoSplatnost);
+          if (dnes > datumSplatnosti) {
+            nezaplatene_po_splatnosti++;
+            nezaplatene_po_splatnosti_suma += f.celkom_s_dph;
+          } else {
+            nezaplatene_pred_splatnostou++;
+            nezaplatene_pred_splatnostou_suma += f.celkom_s_dph;
+          }
+        }
+      }
+    });
+
     res.json({
       status: 'OK',
       data: {
@@ -647,6 +736,10 @@ app.get('/api/statistiky', authenticateApiKey, async (req, res) => {
         celkova_suma: Math.round(celkova_suma * 100) / 100,
         nezaplatene_pocet,
         nezaplatene_suma: Math.round(nezaplatene_suma * 100) / 100,
+        nezaplatene_pred_splatnostou,
+        nezaplatene_pred_splatnostou_suma: Math.round(nezaplatene_pred_splatnostou_suma * 100) / 100,
+        nezaplatene_po_splatnosti,
+        nezaplatene_po_splatnosti_suma: Math.round(nezaplatene_po_splatnosti_suma * 100) / 100,
         zaplatene_pocet,
         zaplatene_suma: Math.round(zaplatene_suma * 100) / 100,
         mena: 'EUR'
@@ -1120,7 +1213,9 @@ const getFlowiiOrders = async (createdFrom = null) => {
       
       // Filter pre orders vytvorené od určitého dátumu (unix timestamp)
       if (createdFrom) {
-        const timestamp = Math.floor(new Date(createdFrom).getTime() / 1000);
+        // createdFrom je už v ISO formáte (YYYY-MM-DD) z parseSlovakDate
+        const timestamp = Math.floor(new Date(createdFrom + 'T00:00:00').getTime() / 1000);
+        console.log(`🕐 Filter timestamp: ${timestamp} (${createdFrom})`);
         url += `&filter[created-from]=${timestamp}`;
       }
 
@@ -1265,18 +1360,11 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
       }
     }
     
-    // Krok 2: Získaj Orders z Flowii (od posledného dátumu)
-    // Konvertuj slovenský dátum formát (DD.MM.YYYY) na ISO (YYYY-MM-DD)
-    let isoDate = null;
-    if (lastInvoiceDate) {
-      const parsed = parseSlovakDate(lastInvoiceDate);
-      if (parsed) {
-        isoDate = parsed;
-        console.log(`📅 Konvertovaný dátum pre Flowii API: ${isoDate}`);
-      }
-    }
-    
-    const orders = await getFlowiiOrders(isoDate);
+    // Krok 2: Získaj Orders z Flowii
+    // NEFILT RUJE podľa dátumu - faktúry môžu byť pridané k starším orders!
+    // Stiahneme posledných 100 orders a kontrolujeme čísla faktúr
+    console.log(`📦 Sťahujem posledných 100 orders z Flowii (bez dátumového filtra)...`);
+    const orders = await getFlowiiOrders(null); // NULL = bez filtra
     
     if (orders.length === 0) {
       return res.json({
@@ -1287,8 +1375,8 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     }
     
     // Krok 3: Pre každú Order získaj dokumenty (faktúry)
-    // Limituj na max 50 orders aby sme nepreťažili API a neprekročili timeout
-    const ordersToProcess = orders.slice(0, 50);
+    // Limituj na max 100 orders (s delay 650ms = ~60s celkovo)
+    const ordersToProcess = orders.slice(0, 100);
     console.log(`📦 Spracovávam ${ordersToProcess.length} z ${orders.length} orders...`);
     
     const newInvoices = [];
@@ -1372,6 +1460,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   PUT    /api/faktury/:cislo`);
   console.log(`   PUT    /api/faktury/:cislo/zaplatit`);
   console.log(`   GET    /api/faktury/search`);
+  console.log(`   GET    /api/faktury/nezaplatene-compact`);
   console.log(`   GET    /api/statistiky`);
   console.log(`   DELETE /api/faktury/:cislo`);
   console.log(`\n📈 Analytické Endpoints:`);
