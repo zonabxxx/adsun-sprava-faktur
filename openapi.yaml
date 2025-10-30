@@ -583,6 +583,109 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/sync/flowii:
+    post:
+      operationId: syncFlowiiInvoices
+      summary: Synchronizuje faktúry z Flowii do Google Sheets
+      description: |
+        Stiahne nové faktúry z Flowii API cez Pohoda XML export a pridá ich do Google Sheets.
+        
+        **Proces:**
+        - Nájde poslednú faktúru v Google Sheets
+        - Stiahne Pohoda XML export z Flowii (faktúry za posledných 30 dní)
+        - Extrahuje všetky údaje (partner, adresy, sumy, firma, vystaviteľ)
+        - Počíta sumy zo všetkých položiek
+        - Používa slovenský formát (dátumy DD.MM.YYYY, čísla s čiarkou)
+        - Pridáva faktúry na začiatok zoznamu (riadok 2)
+        - Kontroluje duplikáty
+        
+        **Kedy volať:**
+        - Pri otvorení konverzácie s GPT
+        - Keď používateľ sa spýta na nové faktúry
+        - Raz denne pre pravidelný update
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Synchronizácia úspešná
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: OK
+                  message:
+                    type: string
+                    example: Synchronizácia úspešná
+                  synchronized:
+                    type: integer
+                    description: Počet nových faktúr pridaných
+                    example: 3
+                  invoices:
+                    type: array
+                    items:
+                      type: string
+                    description: Čísla nových faktúr
+                    example: ["20251444", "20251445", "20251446"]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/sync/payments:
+    post:
+      operationId: syncPaymentStatus
+      summary: Aktualizuje stavy úhrad faktúr z Flowii
+      description: |
+        Skontroluje nezaplatené faktúry v Google Sheets a aktualizuje ich stav podľa Flowii API.
+        
+        **Proces:**
+        - Nájde všetky nezaplatené faktúry v Google Sheets
+        - Skontroluje ich stav vo Flowii API (cez Partners endpoint)
+        - Ak je faktúra uhradená vo Flowii (`unpaid = 0`), zaktualizuje Google Sheets:
+          - Nastaví "Zostáva uhradiť" na 0,00
+          - Vyplní dátum úhrady (dnešný dátum)
+        
+        **Upozornenie:**
+        Tento endpoint môže trvať dlhšie (min. 1-2 minúty) kvôli rate limitom Flowii API.
+        
+        **Kedy volať:**
+        - Raz denne alebo týždenne
+        - Pred generovaním reportov o nezaplatených faktúrach
+        - Keď používateľ potrebuje aktuálny stav úhrad
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Synchronizácia úhrad dokončená
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: OK
+                  message:
+                    type: string
+                    example: Synchronizácia úhrad dokončená
+                  updated:
+                    type: integer
+                    description: Počet faktúr s aktualizovaným stavom
+                    example: 5
+                  invoices:
+                    type: array
+                    items:
+                      type: string
+                    description: Čísla faktúr ktoré boli označené ako uhradené
+                    example: ["20251440", "20251441"]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
 components:
   schemas:
     Faktura:
@@ -635,6 +738,13 @@ components:
   responses:
     Unauthorized:
       description: Neautorizovaný prístup
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    
+    ServerError:
+      description: Interná chyba servera
       content:
         application/json:
           schema:
