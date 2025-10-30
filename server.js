@@ -372,6 +372,57 @@ app.get('/api/faktury', authenticateApiKey, async (req, res) => {
   }
 });
 
+// GET /api/faktury/search - Vyhľadávanie faktúr (MUSÍ BYŤ PRED /:cislo!)
+app.get('/api/faktury/search', authenticateApiKey, async (req, res) => {
+  try {
+    const { partner, datum_od, datum_do, zaplatene } = req.query;
+    
+    const sheets = await getGoogleSheetsClient();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Data!A:AW",
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length <= 1) {
+      return res.json({ status: 'OK', data: [], count: 0 });
+    }
+
+    let data = rows.slice(1)
+      .filter(row => row[COLUMNS.CISLO])
+      .map(row => rowToFaktura(row));
+
+    // Filtrovanie
+    if (partner) {
+      data = data.filter(f => 
+        f.partner.toLowerCase().includes(partner.toLowerCase())
+      );
+    }
+
+    if (datum_od) {
+      data = data.filter(f => f.datum_vystavenia >= datum_od);
+    }
+
+    if (datum_do) {
+      data = data.filter(f => f.datum_vystavenia <= datum_do);
+    }
+
+    if (zaplatene !== undefined) {
+      const jeZaplatene = zaplatene === 'true' || zaplatene === '1';
+      data = data.filter(f => 
+        jeZaplatene ? (f.datum_uhrady && f.zostava_uhradit === 0) : (!f.datum_uhrady || f.zostava_uhradit > 0)
+      );
+    }
+
+    res.json({ status: 'OK', data, count: data.length });
+  } catch (error) {
+    console.error('Error in GET /api/faktury/search:', error);
+    res.status(500).json({ status: 'ERROR', message: error.message });
+  }
+});
+
 // GET /api/faktury/:cislo - Detail faktúry
 app.get('/api/faktury/:cislo', authenticateApiKey, async (req, res) => {
   try {
@@ -543,57 +594,6 @@ app.put('/api/faktury/:cislo/zaplatit', authenticateApiKey, async (req, res) => 
     });
   } catch (error) {
     console.error('Error in PUT /api/faktury/:cislo/zaplatit:', error);
-    res.status(500).json({ status: 'ERROR', message: error.message });
-  }
-});
-
-// GET /api/faktury/search - Vyhľadávanie faktúr
-app.get('/api/faktury/search', authenticateApiKey, async (req, res) => {
-  try {
-    const { partner, datum_od, datum_do, zaplatene } = req.query;
-    
-    const sheets = await getGoogleSheetsClient();
-    const spreadsheetId = process.env.SPREADSHEET_ID;
-
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: "Data!A:AW",
-    });
-
-    const rows = response.data.values;
-    if (!rows || rows.length <= 1) {
-      return res.json({ status: 'OK', data: [], count: 0 });
-    }
-
-    let data = rows.slice(1)
-      .filter(row => row[COLUMNS.CISLO])
-      .map(row => rowToFaktura(row));
-
-    // Filtrovanie
-    if (partner) {
-      data = data.filter(f => 
-        f.partner.toLowerCase().includes(partner.toLowerCase())
-      );
-    }
-
-    if (datum_od) {
-      data = data.filter(f => f.datum_vystavenia >= datum_od);
-    }
-
-    if (datum_do) {
-      data = data.filter(f => f.datum_vystavenia <= datum_do);
-    }
-
-    if (zaplatene !== undefined) {
-      const jeZaplatene = zaplatene === 'true' || zaplatene === '1';
-      data = data.filter(f => 
-        jeZaplatene ? (f.datum_uhrady && f.zostava_uhradit === 0) : (!f.datum_uhrady || f.zostava_uhradit > 0)
-      );
-    }
-
-    res.json({ status: 'OK', data, count: data.length });
-  } catch (error) {
-    console.error('Error in GET /api/faktury/search:', error);
     res.status(500).json({ status: 'ERROR', message: error.message });
   }
 });
