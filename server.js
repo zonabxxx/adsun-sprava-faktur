@@ -1406,6 +1406,70 @@ const getFlowiiOrderDocuments = async (orderId) => {
   }
 };
 
+// Získanie všetkých partnerov z Flowii
+const getFlowiiPartners = async () => {
+  const token = await getFlowiiToken();
+  const partners = [];
+  let pageNumber = 0;
+  let hasMore = true;
+
+  try {
+    while (hasMore) {
+      const response = await axios.get(
+        `${process.env.FLOWII_API_URL}/partners?companyId=${process.env.FLOWII_COMPANY_ID}&page[size]=100&page[number]=${pageNumber}`,
+        {
+          headers: {
+            'Api-Key': process.env.FLOWII_API_KEY,
+            'Authorization': `Bearer ${token}`
+          }
+        }
+      );
+
+      if (response.data.data && response.data.data.length > 0) {
+        partners.push(...response.data.data);
+        hasMore = response.data.links && response.data.links.next;
+        pageNumber++;
+      } else {
+        hasMore = false;
+      }
+    }
+    console.log(`✅ Získaných ${partners.length} partnerov z Flowii`);
+    return partners;
+  } catch (error) {
+    console.error('❌ Chyba pri získavaní partnerov z Flowii:', error.response?.data || error.message);
+    throw new Error('Nepodarilo sa získať partnerov z Flowii');
+  }
+};
+
+// Získanie dokumentov (faktúr) pre konkrétneho Partnera s rate limiting
+const getFlowiiPartnerDocuments = async (partnerId) => {
+  const token = await getFlowiiToken();
+
+  try {
+    const response = await axios.get(
+      `${process.env.FLOWII_API_URL}/partners/${partnerId}/documents?companyId=${process.env.FLOWII_COMPANY_ID}&page[size]=100`,
+      {
+        headers: {
+          'Api-Key': process.env.FLOWII_API_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+
+    // Filtruj len faktúry (type = 4)
+    const invoices = (response.data.data || []).filter(doc => doc.attributes.type === 4);
+    return invoices;
+  } catch (error) {
+    if (error.response?.data?.errors?.[0]?.title?.includes('quota exceeded')) {
+      console.log(`⏳ Rate limit - čakám 60s pre partnera ${partnerId}...`);
+      await delay(60000);
+      return getFlowiiPartnerDocuments(partnerId);
+    }
+    console.error(`❌ Chyba pri získavaní dokumentov pre partnera ${partnerId}:`, error.response?.data || error.message);
+    return [];
+  }
+};
+
 // Mapovanie Flowii faktúry na Google Sheets riadok
 const mapFlowiiInvoiceToSheetRow = (invoice, partner, included) => {
   const attrs = invoice.attributes;
@@ -1487,56 +1551,159 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
       }
     }
     
-    // Krok 2: Získaj Orders z Flowii
-    // NEFILT RUJE podľa dátumu - faktúry môžu byť pridané k starším orders!
-    // Stiahneme posledných 100 orders a kontrolujeme čísla faktúr
-    console.log(`📦 Sťahujem posledných 100 orders z Flowii (bez dátumového filtra)...`);
-    const orders = await getFlowiiOrders(null); // NULL = bez filtra
+    // Krok 2: Získaj Flowii token
+    const token = await getFlowiiToken();
     
-    if (orders.length === 0) {
-      return res.json({
-        status: 'OK',
-        message: 'Žiadne nové orders na synchronizáciu',
-        synchronized: 0
-      });
-    }
+    // Krok 3: Stiahni Pohoda XML export (posledných 30 dní)
+    const fromDate = lastInvoiceDate ? parseSlovakDate(lastInvoiceDate) : null;
+    const fromTimestamp = fromDate ? Math.floor(new Date(fromDate + 'T00:00:00').getTime() / 1000) : Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60);
+    const toTimestamp = Math.floor(Date.now() / 1000);
     
-    // Krok 3: Pre každú Order získaj dokumenty (faktúry)
-    // Limituj na max 100 orders (s delay 650ms = ~60s celkovo)
-    const ordersToProcess = orders.slice(0, 100);
-    console.log(`📦 Spracovávam ${ordersToProcess.length} z ${orders.length} orders...`);
+    console.log(`📥 Sťahujem Pohoda XML export...`);
+    
+    const xmlResponse = await axios.get(
+      `${process.env.FLOWII_API_URL}/documents/export/pohoda?companyId=${process.env.FLOWII_COMPANY_ID}&filter[issued-from]=${fromTimestamp}&filter[issued-to]=${toTimestamp}`,
+      {
+        headers: {
+          'Api-Key': process.env.FLOWII_API_KEY,
+          'Authorization': `Bearer ${token}`
+        },
+        responseType: 'text'
+      }
+    );
+    
+    const xml = xmlResponse.data;
+    
+    // Krok 4: Parsuj XML a extrahuj faktúry
+    const invoiceMatches = xml.match(/<invoice version[^>]*>[\s\S]*?<\/invoice>/g) || [];
+    console.log(`📄 Našiel som ${invoiceMatches.length} faktúr v XML`);
     
     const newInvoices = [];
-    let processedCount = 0;
+    const metadata = await sheets.spreadsheets.get({ spreadsheetId });
+    const dataSheet = metadata.data.sheets.find(s => s.properties.title === 'Data');
+    const sheetId = dataSheet ? dataSheet.properties.sheetId : 0;
     
-    for (const order of ordersToProcess) {
-      processedCount++;
-      console.log(`🔄 Spracovávam order ${processedCount}/${ordersToProcess.length} (ID: ${order.id})...`);
+    for (const invoiceXml of invoiceMatches) {
+      const get = (tag) => {
+        const match = invoiceXml.match(new RegExp(`<${tag}[^>]*>([^<]+)<\/${tag}>`));
+        return match ? match[1] : '';
+      };
       
-      const documents = await getFlowiiOrderDocuments(order.id);
-      
-      // Malý delay medzi requestmi (650ms = ~90 requestov/minútu)
-      await delay(650);
-      
-      for (const doc of documents) {
-        // Skontroluj či faktúra už existuje v Google Sheets
-        const serialNr = doc.attributes['serial-nr'];
-        const exists = rows && rows.some(row => row[COLUMNS.CISLO] === serialNr);
-        
-        if (!exists) {
-          // Získaj partner data z included
-          let partner = null;
-          if (order.relationships && order.relationships.partner && order.relationships.partner.data) {
-            const partnerId = order.relationships.partner.data.id;
-            // V reálnom prípade by sme museli získať partnera z API alebo included
-            // Pre jednoduchosť použijeme údaje z order
-          }
-          
-          const sheetRow = mapFlowiiInvoiceToSheetRow(doc, partner, []);
-          newInvoices.push(sheetRow);
-          console.log(`✅ Nová faktúra: ${serialNr}`);
-        }
+      const cislo = get('numberRequested');
+      if (!cislo) {
+        console.log('⚠️ Faktúra bez čísla, preskakujem');
+        continue;
       }
+      
+      const exists = rows && rows.some(row => row[COLUMNS.CISLO] === cislo);
+      if (exists) {
+        console.log(`⏭️ Faktúra ${cislo} už existuje, preskakujem`);
+        continue;
+      }
+      
+      console.log(`✅ Nová faktúra: ${cislo}`);
+      
+      const partnerSection = invoiceXml.match(/<partnerIdentity>[\s\S]*?<\/partnerIdentity>/);
+      const myIdentitySection = invoiceXml.match(/<myIdentity>[\s\S]*?<\/myIdentity>/);
+      
+      const getFromSection = (tag, section) => {
+        if (!section) return '';
+        const match = section[0].match(new RegExp(`<${tag}>([^<]+)<\/${tag}>`));
+        return match ? match[1] : '';
+      };
+      
+      const toSlovakDate = (iso) => {
+        if (!iso) return '';
+        const [y, m, d] = iso.split('-');
+        return `${d}.${m}.${y}`;
+      };
+      
+      // Sumy - spočítaj všetky priceSum a priceVAT z položiek
+      const priceSumMatches = invoiceXml.match(/<priceSum[^>]*>([^<]+)<\/priceSum>/g) || [];
+      const priceVATMatches = invoiceXml.match(/<priceVAT[^>]*>([^<]+)<\/priceVAT>/g) || [];
+      
+      let sumaSDPH = 0;
+      let sumaDPH = 0;
+      
+      priceSumMatches.forEach(match => {
+        const value = parseFloat(match.match(/>([^<]+)</)[1]);
+        sumaSDPH += value;
+      });
+      
+      priceVATMatches.forEach(match => {
+        const value = parseFloat(match.match(/>([^<]+)</)[1]);
+        sumaDPH += value;
+      });
+      
+      const sumaBezDPH = sumaSDPH - sumaDPH;
+      
+      console.log(`  Sumy: ${sumaBezDPH.toFixed(2)} EUR (bez DPH), ${sumaSDPH.toFixed(2)} EUR (s DPH)`);
+      
+      const row = new Array(49).fill('');
+      row[0] = cislo;
+      row[1] = 'Faktúra';
+      row[2] = toSlovakDate(get('dateAccounting'));
+      row[3] = '';
+      row[4] = toSlovakDate(get('dateDelivery'));
+      row[5] = toSlovakDate(get('dateDue'));
+      row[6] = getFromSection('name', partnerSection);
+      row[7] = '';
+      row[8] = getFromSection('street', partnerSection);
+      row[9] = getFromSection('zip', partnerSection);
+      row[10] = getFromSection('city', partnerSection);
+      row[11] = getFromSection('ids', partnerSection);
+      row[12] = getFromSection('ids', partnerSection) === 'SK' ? 'Slovenská republika' : '';
+      row[13] = '';
+      row[14] = '';
+      row[15] = '';
+      row[16] = sumaSDPH.toFixed(2).replace('.', ',');
+      row[17] = sumaBezDPH.toFixed(2).replace('.', ',');
+      row[18] = sumaBezDPH.toFixed(2).replace('.', ',');
+      row[19] = '0,00';
+      row[20] = '0,00';
+      row[21] = '23,00';
+      row[22] = '0,00';
+      row[23] = sumaDPH.toFixed(2).replace('.', ',');
+      row[24] = '0,00';
+      row[25] = 'EUR';
+      row[26] = '';
+      row[27] = '';
+      row[28] = '';
+      row[29] = '';
+      row[30] = get('symVar') || cislo;
+      row[31] = '';
+      row[32] = '';
+      row[33] = '';
+      row[34] = getFromSection('company', myIdentitySection);
+      row[35] = getFromSection('name', myIdentitySection);
+      row[36] = '0,00';
+      row[37] = '0,00';
+      row[38] = sumaSDPH.toFixed(2).replace('.', ',');
+      row[39] = sumaBezDPH.toFixed(2).replace('.', ',');
+      row[40] = sumaSDPH.toFixed(2).replace('.', ',');
+      
+      // Vlož na začiatok (riadok 2)
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [{
+            insertDimension: {
+              range: { sheetId, dimension: 'ROWS', startIndex: 1, endIndex: 2 },
+              inheritFromBefore: false
+            }
+          }]
+        }
+      });
+      
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: 'Data!A2:AW2',
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [row] }
+      });
+      
+      newInvoices.push(row);
+      await delay(500);
     }
     
     if (newInvoices.length === 0) {
@@ -1546,16 +1713,6 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
         synchronized: 0
       });
     }
-    
-    // Krok 4: Pridaj nové faktúry do Google Sheets
-    await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range: 'Data!A:AW',
-      valueInputOption: 'USER_ENTERED',
-      requestBody: {
-        values: newInvoices
-      }
-    });
     
     console.log(`✅ Synchronizácia dokončená: ${newInvoices.length} nových faktúr`);
     
@@ -1572,6 +1729,199 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
       status: 'ERROR', 
       message: error.message,
       detail: error.response?.data || null
+    });
+  }
+});
+
+// POST /api/sync/payments - Aktualizuj stavy úhrad z Flowii API
+app.post('/api/sync/payments', authenticateApiKey, async (req, res) => {
+  try {
+    console.log('💰 Aktualizujem stavy úhrad z Flowii...');
+    
+    // Krok 1: Získaj všetky nezaplatené faktúry z Google Sheets
+    const sheets = await getGoogleSheetsClient();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+    
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Data!A:AP",
+    });
+    
+    const rows = response.data.values;
+    if (!rows || rows.length <= 1) {
+      return res.json({
+        status: 'OK',
+        message: 'Žiadne faktúry na kontrolu',
+        updated: 0
+      });
+    }
+    
+    // Filter len nezaplatené faktúry (bez dátumu úhrady)
+    const nezaplatene = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const cislo = row[COLUMNS.CISLO];
+      const datumUhrady = row[COLUMNS.DATUM_UHRADY];
+      const zostavaUhradit = row[COLUMNS.ZOSTAVA_UHRADIT];
+      
+      // Ak nemá dátum úhrady alebo zostáva uhradiť > 0
+      if (cislo && (!datumUhrady || (zostavaUhradit && parseFloat(zostavaUhradit.replace(',', '.')) > 0))) {
+        nezaplatene.push({ cislo, rowIndex: i + 1 });
+      }
+    }
+    
+    console.log(`📄 Našiel som ${nezaplatene.length} nezaplatených faktúr na kontrolu`);
+    
+    if (nezaplatene.length === 0) {
+      return res.json({
+        status: 'OK',
+        message: 'Všetky faktúry sú označené ako uhradené',
+        updated: 0
+      });
+    }
+    
+    // Krok 2: Získaj údaje z Flowii API (cez Partners endpoint)
+    const token = await getFlowiiToken();
+    const partners = await getFlowiiPartners();
+    
+    const updated = [];
+    
+    for (const partner of partners) {
+      const docs = await getFlowiiPartnerDocuments(partner.id);
+      await delay(700);
+      
+      for (const doc of docs) {
+        const serialNr = doc.attributes['serial-nr'];
+        const unpaid = doc.attributes['unpaid'] || 0;
+        const invoiceState = doc.attributes['invoice-state'];
+        
+        // Nájdi túto faktúru v zozname nezaplatených
+        const item = nezaplatene.find(f => f.cislo === serialNr);
+        
+        if (item && unpaid === 0) {
+          // Faktúra je uhradená vo Flowii, ale nie v Google Sheets
+          console.log(`✅ Faktúra ${serialNr} je uhradená (state: ${invoiceState})`);
+          
+          // Zaktualizuj Google Sheets
+          const today = new Date();
+          const datumUhrady = `${today.getDate()}.${today.getMonth() + 1}.${today.getFullYear()}`;
+          
+          await sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `Data!AO${item.rowIndex}:AP${item.rowIndex}`,
+            valueInputOption: 'USER_ENTERED',
+            requestBody: {
+              values: [[
+                '0,00',        // AO - Zostáva uhradiť
+                datumUhrady    // AP - Dátum úhrady
+              ]]
+            }
+          });
+          
+          updated.push(serialNr);
+          await delay(500);
+        }
+      }
+    }
+    
+    console.log(`✅ Aktualizovaných ${updated.length} faktúr`);
+    
+    res.json({
+      status: 'OK',
+      message: 'Synchronizácia úhrad dokončená',
+      updated: updated.length,
+      invoices: updated
+    });
+    
+  } catch (error) {
+    console.error('Error in POST /api/sync/payments:', error);
+    res.status(500).json({
+      status: 'ERROR',
+      message: error.message
+    });
+  }
+});
+
+// POST /api/sync/add-invoice - Pridaj faktúru priamo (pre manuálny sync script)
+app.post('/api/sync/add-invoice', authenticateApiKey, async (req, res) => {
+  try {
+    const { row, position } = req.body;
+    
+    if (!row || !Array.isArray(row) || row.length !== 49) {
+      return res.status(400).json({
+        status: 'ERROR',
+        message: 'Neplatný formát - očakáva sa pole s 49 prvkami'
+      });
+    }
+    
+    const sheets = await getGoogleSheetsClient();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+    
+    // Ak position='start', vlož na riadok 2 (hneď po hlavičke)
+    // Ak position='end' alebo nie je zadané, pridaj na koniec (append)
+    if (position === 'start') {
+      // Najprv získaj správny sheet ID
+      const metadata = await sheets.spreadsheets.get({ spreadsheetId });
+      const dataSheet = metadata.data.sheets.find(s => s.properties.title === 'Data');
+      const sheetId = dataSheet ? dataSheet.properties.sheetId : 0;
+      
+      // Vlož na začiatok (riadok 2)
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              insertDimension: {
+                range: {
+                  sheetId: sheetId,
+                  dimension: 'ROWS',
+                  startIndex: 1, // Riadok 2 (index 1 = riadok 2)
+                  endIndex: 2
+                },
+                inheritFromBefore: false
+              }
+            }
+          ]
+        }
+      });
+      
+      // Zapíš dáta do nového riadku 2
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: 'Data!A2:AW2',
+        valueInputOption: 'USER_ENTERED',
+        requestBody: {
+          values: [row]
+        }
+      });
+      
+      console.log(`✅ Pridaná faktúra na začiatok: ${row[COLUMNS.CISLO]}`);
+    } else {
+      // Pridaj na koniec (pôvodné chovanie)
+      await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: 'Data!A:AW',
+        valueInputOption: 'USER_ENTERED',
+        requestBody: {
+          values: [row]
+        }
+      });
+      
+      console.log(`✅ Pridaná faktúra na koniec: ${row[COLUMNS.CISLO]}`);
+    }
+    
+    res.json({
+      status: 'OK',
+      message: 'Faktúra pridaná',
+      cislo: row[COLUMNS.CISLO],
+      position: position || 'end'
+    });
+    
+  } catch (error) {
+    console.error('Error in POST /api/sync/add-invoice:', error);
+    res.status(500).json({
+      status: 'ERROR',
+      message: error.message
     });
   }
 });
