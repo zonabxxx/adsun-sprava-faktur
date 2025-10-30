@@ -32,11 +32,17 @@ const getGoogleSheetsClient = async () => {
 
   // Pre Railway deployment - použij base64 encoded credentials
   if (process.env.GOOGLE_CREDENTIALS_BASE64) {
-    const credString = Buffer.from(
-      process.env.GOOGLE_CREDENTIALS_BASE64, 
-      'base64'
-    ).toString('utf8');
-    credentials = JSON.parse(credString);
+    try {
+      const credString = Buffer.from(
+        process.env.GOOGLE_CREDENTIALS_BASE64, 
+        'base64'
+      ).toString('utf8');
+      credentials = JSON.parse(credString);
+      console.log('✅ Base64 credentials decoded successfully');
+    } catch (error) {
+      console.error('❌ Error decoding Base64 credentials:', error.message);
+      throw new Error('Invalid GOOGLE_CREDENTIALS_BASE64');
+    }
     
     const auth = new google.auth.GoogleAuth({
       credentials,
