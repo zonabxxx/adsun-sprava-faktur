@@ -271,12 +271,27 @@ const generateNextCisloFaktury = async (sheets, spreadsheetId) => {
 // API ENDPOINTS
 // ===============================================
 
-// Health check
+// Health check - musí byť rýchly pre Railway
 app.get('/health', (req, res) => {
-  res.json({ 
+  res.status(200).json({ 
     status: 'OK', 
     message: 'Faktúry API beží',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    port: PORT
+  });
+});
+
+// Railway readiness probe
+app.get('/', (req, res) => {
+  res.status(200).json({
+    name: 'Faktúry GPT API',
+    version: '1.0.0',
+    status: 'running',
+    endpoints: {
+      health: '/health',
+      faktury: '/api/faktury',
+      statistiky: '/api/statistiky'
+    }
   });
 });
 
