@@ -1,0 +1,671 @@
+openapi: 3.1.0
+info:
+  title: Faktúry Management API
+  description: |
+    API pre správu faktúr v Google Sheets.
+    
+    **Funkcie:**
+    - Vytváranie nových faktúr
+    - Zobrazovanie zoznamu faktúr
+    - Zobrazovanie detailov faktúry
+    - Aktualizácia faktúr
+    - Označovanie faktúr ako zaplatené
+    - Vyhľadávanie faktúr
+    - Štatistiky
+    
+  version: 1.0.0
+
+servers:
+  - url: https://tvoja-url.up.railway.app
+    description: Production Server
+  - url: http://localhost:3000
+    description: Local Development
+
+paths:
+  /health:
+    get:
+      operationId: checkHealth
+      summary: Kontrola stavu API
+      description: Zistí, či API beží a je dostupné
+      responses:
+        '200':
+          description: API beží správne
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: OK
+                  message:
+                    type: string
+                    example: Faktúry API beží
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /api/faktury:
+    get:
+      operationId: getAllFaktury
+      summary: Získa zoznam všetkých faktúr
+      description: Vráti všetky faktúry zo súboru
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Zoznam faktúr
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: OK
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Faktura'
+                  count:
+                    type: integer
+                    description: Počet faktúr
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    
+    post:
+      operationId: createFaktura
+      summary: Vytvorí novú faktúru
+      description: Vytvorí novú faktúru. Číslo faktúry sa generuje automaticky ak nie je zadané.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FakturaInput'
+            examples:
+              zakladna_faktura:
+                summary: Základná faktúra
+                value:
+                  partner: "ADSUN, s.r.o."
+                  ico: "12345678"
+                  celkom_bez_dph: 1000
+                  celkom_s_dph: 1200
+                  suma_dph_vyssia: 200
+                  zaklad_vyssia_sadzba: 1000
+                  datum_splatnosti: "2025-11-15"
+                  vystavil: "GPT Agent"
+      responses:
+        '200':
+          description: Faktúra vytvorená
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: OK
+                  message:
+                    type: string
+                    example: Faktúra vytvorená
+                  cislo:
+                    type: string
+                    example: "2025001"
+        '400':
+          description: Chybný vstup
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/faktury/{cislo}:
+    get:
+      operationId: getFakturaById
+      summary: Získa detail faktúry
+      description: Vráti kompletné informácie o faktúre podľa čísla
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: cislo
+          in: path
+          required: true
+          description: Číslo faktúry (napr. 2025001)
+          schema:
+            type: string
+          example: "2025001"
+      responses:
+        '200':
+          description: Detail faktúry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: OK
+                  data:
+                    $ref: '#/components/schemas/Faktura'
+        '404':
+          description: Faktúra nenájdená
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    
+    put:
+      operationId: updateFaktura
+      summary: Aktualizuje faktúru
+      description: Upraví existujúcu faktúru. Zmenia sa len zadané polia.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: cislo
+          in: path
+          required: true
+          description: Číslo faktúry
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FakturaInput'
+      responses:
+        '200':
+          description: Faktúra aktualizovaná
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  cislo:
+                    type: string
+        '404':
+          description: Faktúra nenájdená
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    
+    delete:
+      operationId: deleteFaktura
+      summary: Odstráni faktúru
+      description: Odstráni faktúru zo súboru (neodporúča sa, radšej použite poznámky)
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: cislo
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Faktúra odstránená
+        '404':
+          description: Faktúra nenájdená
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/faktury/{cislo}/zaplatit:
+    put:
+      operationId: markFakturaAsPaid
+      summary: Označí faktúru ako zaplatenú
+      description: Nastaví dátum úhrady a spôsob platby, zostáva uhradiť sa nastaví na 0
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: cislo
+          in: path
+          required: true
+          description: Číslo faktúry
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                datum_uhrady:
+                  type: string
+                  format: date
+                  description: Dátum úhrady (YYYY-MM-DD). Ak nie je zadaný, použije sa dnes.
+                  example: "2025-10-30"
+                sposob_uhrady:
+                  type: string
+                  description: Spôsob úhrady
+                  example: "bankový prevod"
+                  enum: ["bankový prevod", "hotovosť", "karta", "PayPal"]
+      responses:
+        '200':
+          description: Faktúra označená ako zaplatená
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  cislo:
+                    type: string
+                  datum_uhrady:
+                    type: string
+                    format: date
+        '404':
+          description: Faktúra nenájdená
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/faktury/search:
+    get:
+      operationId: searchFaktury
+      summary: Vyhľadá faktúry podľa kritérií
+      description: Filtruje faktúry podľa partnera, dátumu a stavu úhrady
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: partner
+          in: query
+          description: Názov partnera (hľadá v reťazci, case-insensitive)
+          schema:
+            type: string
+          example: "ADSUN"
+        - name: datum_od
+          in: query
+          description: Dátum vystavenia od (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+        - name: datum_do
+          in: query
+          description: Dátum vystavenia do (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+        - name: zaplatene
+          in: query
+          description: Filtruje zaplatené (true) alebo nezaplatené (false) faktúry
+          schema:
+            type: string
+            enum: ["true", "false", "1", "0"]
+      responses:
+        '200':
+          description: Výsledky vyhľadávania
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Faktura'
+                  count:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/statistiky:
+    get:
+      operationId: getStatistiky
+      summary: Získa štatistiky faktúr
+      description: Vráti celkový počet faktúr, sumy, zaplatené a nezaplatené
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Štatistiky
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      celkovy_pocet:
+                        type: integer
+                        description: Celkový počet faktúr
+                      celkova_suma:
+                        type: number
+                        description: Celková suma všetkých faktúr
+                      nezaplatene_pocet:
+                        type: integer
+                        description: Počet nezaplatených faktúr
+                      nezaplatene_suma:
+                        type: number
+                        description: Suma nezaplatených faktúr
+                      zaplatene_pocet:
+                        type: integer
+                        description: Počet zaplatených faktúr
+                      zaplatene_suma:
+                        type: number
+                        description: Suma zaplatených faktúr
+                      mena:
+                        type: string
+                        example: EUR
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  schemas:
+    Faktura:
+      type: object
+      properties:
+        cislo:
+          type: string
+          description: Číslo faktúry (napr. 2025001)
+          example: "2025001"
+        typ:
+          type: string
+          description: Typ dokladu
+          example: "Faktúra - vydaná"
+        datum_vystavenia:
+          type: string
+          format: date
+          description: Dátum vystavenia (YYYY-MM-DD)
+        datum_dodania_objednavky:
+          type: string
+          format: date
+        datum_dodania:
+          type: string
+          format: date
+        datum_splatnosti:
+          type: string
+          format: date
+          description: Dátum splatnosti
+        partner:
+          type: string
+          description: Názov partnera/klienta
+          example: "ADSUN, s.r.o."
+        cislo_partnera:
+          type: string
+        ulica:
+          type: string
+          description: Adresa - ulica
+        psc:
+          type: string
+          description: PSČ
+        mesto:
+          type: string
+          description: Mesto
+        kod_krajiny:
+          type: string
+          example: "SK"
+        krajina:
+          type: string
+          example: "Slovensko"
+        ico:
+          type: string
+          description: IČO partnera
+        dic:
+          type: string
+          description: DIČ partnera
+        ic_dph:
+          type: string
+          description: IČ DPH partnera
+        celkom_s_dph:
+          type: number
+          description: Celková suma s DPH
+          example: 1200
+        celkom_bez_dph:
+          type: number
+          description: Celková suma bez DPH
+          example: 1000
+        zaklad_vyssia_sadzba:
+          type: number
+          description: Základ dane - vyššia sadzba (20%)
+        zaklad_nizsia_sadzba:
+          type: number
+          description: Základ dane - nižšia sadzba (10%)
+        zaklad_nula_sadzba:
+          type: number
+          description: Základ dane - 0% sadzba
+        sadzba_dph_vyssia:
+          type: number
+          description: Vyššia sadzba DPH v %
+          example: 20
+        sadzba_dph_nizsia:
+          type: number
+          description: Nižšia sadzba DPH v %
+          example: 10
+        suma_dph_vyssia:
+          type: number
+          description: Suma DPH - vyššia sadzba
+        suma_dph_nizsia:
+          type: number
+          description: Suma DPH - nižšia sadzba
+        mena:
+          type: string
+          description: Mena
+          example: "EUR"
+        sposob_uhrady:
+          type: string
+          description: Spôsob úhrady
+          example: "bankový prevod"
+        ucet:
+          type: string
+          description: Číslo účtu
+        iban:
+          type: string
+          description: IBAN
+        swift:
+          type: string
+          description: SWIFT kód
+        variabilny_symbol:
+          type: string
+          description: Variabilný symbol
+        specificky_symbol:
+          type: string
+        konstantny_symbol:
+          type: string
+        cislo_objednavky:
+          type: string
+          description: Číslo objednávky
+        firma:
+          type: string
+          description: Názov firmy (vystavovateľ)
+        vystavil:
+          type: string
+          description: Kto vystavil faktúru
+        uhradene_zalohovou:
+          type: number
+          description: Uhradené zálohovou faktúrou s DPH
+        uhradene_zalohovou_bez_dph:
+          type: number
+          description: Uhradené zálohovou faktúrou bez DPH
+        celkom_bez_zalohy:
+          type: number
+          description: Celkom bez uhradenej zálohy s DPH
+        celkom_bez_zalohy_bez_dph:
+          type: number
+          description: Celkom bez uhradenej zálohy bez DPH
+        zostava_uhradit:
+          type: number
+          description: Zostáva uhradiť
+        datum_uhrady:
+          type: string
+          format: date
+          description: Dátum úhrady (ak je zaplatené)
+        cislo_dan_dokladu:
+          type: string
+          description: Číslo daňového dokladu k prijatej zálohe
+        interna_poznamka:
+          type: string
+          description: Interná poznámka
+        kategoria:
+          type: string
+          description: Kategória
+        podkategoria:
+          type: string
+          description: Podkategória
+        cislo_zakazky:
+          type: string
+          description: Číslo zákazky
+        stredisko:
+          type: string
+          description: Stredisko
+        uvodny_text:
+          type: string
+          description: Úvodný text faktúry
+    
+    FakturaInput:
+      type: object
+      properties:
+        cislo:
+          type: string
+          description: Číslo faktúry (ak nie je zadané, vygeneruje sa automaticky)
+        typ:
+          type: string
+        datum_vystavenia:
+          type: string
+          format: date
+        datum_dodania_objednavky:
+          type: string
+          format: date
+        datum_dodania:
+          type: string
+          format: date
+        datum_splatnosti:
+          type: string
+          format: date
+        partner:
+          type: string
+        cislo_partnera:
+          type: string
+        ulica:
+          type: string
+        psc:
+          type: string
+        mesto:
+          type: string
+        kod_krajiny:
+          type: string
+        krajina:
+          type: string
+        ico:
+          type: string
+        dic:
+          type: string
+        ic_dph:
+          type: string
+        celkom_s_dph:
+          type: number
+        celkom_bez_dph:
+          type: number
+        zaklad_vyssia_sadzba:
+          type: number
+        zaklad_nizsia_sadzba:
+          type: number
+        zaklad_nula_sadzba:
+          type: number
+        sadzba_dph_vyssia:
+          type: number
+        sadzba_dph_nizsia:
+          type: number
+        suma_dph_vyssia:
+          type: number
+        suma_dph_nizsia:
+          type: number
+        mena:
+          type: string
+        sposob_uhrady:
+          type: string
+        ucet:
+          type: string
+        iban:
+          type: string
+        swift:
+          type: string
+        variabilny_symbol:
+          type: string
+        specificky_symbol:
+          type: string
+        konstantny_symbol:
+          type: string
+        cislo_objednavky:
+          type: string
+        firma:
+          type: string
+        vystavil:
+          type: string
+        uhradene_zalohovou:
+          type: number
+        uhradene_zalohovou_bez_dph:
+          type: number
+        celkom_bez_zalohy:
+          type: number
+        celkom_bez_zalohy_bez_dph:
+          type: number
+        zostava_uhradit:
+          type: number
+        datum_uhrady:
+          type: string
+          format: date
+        cislo_dan_dokladu:
+          type: string
+        interna_poznamka:
+          type: string
+        kategoria:
+          type: string
+        podkategoria:
+          type: string
+        cislo_zakazky:
+          type: string
+        stredisko:
+          type: string
+        uvodny_text:
+          type: string
+    
+    Error:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ERROR
+        message:
+          type: string
+          example: Chybová správa
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Faktury-API-Key
+      description: |
+        API kľúč pre autentifikáciu. Nastaví sa v .env súbore ako API_KEY.
+        
+        Použitie v requeste:
+        ```
+        X-Faktury-API-Key: sk_faktury_secret_key_ZMEN_TO
+        ```
+
+  responses:
+    Unauthorized:
+      description: Neautorizovaný prístup - chýbajúci alebo neplatný API kľúč
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            status: ERROR
+            message: Unauthorized - Invalid or missing API key
+
