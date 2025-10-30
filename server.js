@@ -1608,6 +1608,10 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
         return match ? match[1] : '';
       };
       
+      // Debug: Pozri čo sa extrahuje z partnerSection
+      const partnerName = getFromSection('name', partnerSection);
+      console.log(`  📋 Partner: ${partnerName || '(prázdne!)'}`);
+      
       const toSlovakDate = (iso) => {
         if (!iso) return '';
         const [y, m, d] = iso.split('-');
@@ -1642,7 +1646,7 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
       row[3] = '';
       row[4] = toSlovakDate(get('dateDelivery'));
       row[5] = toSlovakDate(get('dateDue'));
-      row[6] = getFromSection('name', partnerSection);
+      row[6] = partnerName; // Už máme extrahované
       row[7] = '';
       row[8] = getFromSection('street', partnerSection);
       row[9] = getFromSection('zip', partnerSection);
@@ -1686,8 +1690,10 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     invoicesToAdd.sort((a, b) => b.cisloNum - a.cisloNum);
     console.log(`🔢 Zoradené faktúry (najnovšie prvé): ${invoicesToAdd.map(inv => inv.cislo).join(', ')}`);
     
-    // KROK C: Pridaj faktúry do Sheets (najnovšie prvé)
-    for (const invoice of invoicesToAdd) {
+    // KROK C: Pridaj faktúry do Sheets - POZOR: Vkladáme v OPAČNOM poradí!
+    // Každá nová sa vloží na riadok 2, takže najstaršiu dáme PRVÚ, najnovšiu POSLEDNÚ
+    for (let i = invoicesToAdd.length - 1; i >= 0; i--) {
+      const invoice = invoicesToAdd[i];
       // Vlož na začiatok (riadok 2)
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId,
