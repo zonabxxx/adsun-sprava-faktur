@@ -376,7 +376,20 @@ app.get('/api/faktury', authenticateApiKey, async (req, res) => {
 // GET /api/faktury/search - Vyhľadávanie faktúr (MUSÍ BYŤ PRED /:cislo!)
 app.get('/api/faktury/search', authenticateApiKey, async (req, res) => {
   try {
-    const { partner, datum_od, datum_do, zaplatene } = req.query;
+    const { 
+      partner, 
+      datum_od, 
+      datum_do, 
+      zaplatene,
+      vystavil,
+      ico,
+      min_suma,
+      max_suma,
+      mesiac,
+      rok,
+      orderBy,
+      direction
+    } = req.query;
     
     const sheets = await getGoogleSheetsClient();
     const spreadsheetId = process.env.SPREADSHEET_ID;
@@ -417,6 +430,71 @@ app.get('/api/faktury/search', authenticateApiKey, async (req, res) => {
       );
     }
 
+    // Nové filtre
+    if (vystavil) {
+      data = data.filter(f => 
+        f.vystavil.toLowerCase().includes(vystavil.toLowerCase())
+      );
+    }
+
+    if (ico) {
+      data = data.filter(f => f.ico === ico);
+    }
+
+    if (min_suma) {
+      const minSuma = parseFloat(min_suma);
+      data = data.filter(f => f.celkom_s_dph >= minSuma);
+    }
+
+    if (max_suma) {
+      const maxSuma = parseFloat(max_suma);
+      data = data.filter(f => f.celkom_s_dph <= maxSuma);
+    }
+
+    if (mesiac) {
+      // Format: YYYY-MM
+      data = data.filter(f => {
+        if (!f.datum_vystavenia) return false;
+        const isoDate = parseSlovakDate(f.datum_vystavenia);
+        if (!isoDate) return false;
+        return isoDate.substring(0, 7) === mesiac;
+      });
+    }
+
+    if (rok) {
+      data = data.filter(f => {
+        if (!f.datum_vystavenia) return false;
+        const isoDate = parseSlovakDate(f.datum_vystavenia);
+        if (!isoDate) return false;
+        return isoDate.substring(0, 4) === rok;
+      });
+    }
+
+    // Zoradenie
+    if (orderBy) {
+      const dir = direction === 'desc' ? -1 : 1;
+      data.sort((a, b) => {
+        let valA = a[orderBy];
+        let valB = b[orderBy];
+
+        // Pre dátumy konvertuj na ISO formát
+        if (orderBy.includes('datum') && valA && valB) {
+          valA = parseSlovakDate(valA) || valA;
+          valB = parseSlovakDate(valB) || valB;
+        }
+
+        // Pre čísla
+        if (typeof valA === 'number' && typeof valB === 'number') {
+          return (valA - valB) * dir;
+        }
+
+        // Pre stringy
+        if (valA < valB) return -1 * dir;
+        if (valA > valB) return 1 * dir;
+        return 0;
+      });
+    }
+
     res.json({ status: 'OK', data, count: data.length });
   } catch (error) {
     console.error('Error in GET /api/faktury/search:', error);
@@ -429,6 +507,7 @@ app.get('/api/faktury/nezaplatene-compact', authenticateApiKey, async (req, res)
   try {
     const limit = parseInt(req.query.limit) || 100; // Default 100 faktúr
     const po_splatnosti = req.query.po_splatnosti === 'true';
+    const { partner, vystavil, min_suma, max_suma, orderBy, direction } = req.query;
     
     const sheets = await getGoogleSheetsClient();
     const spreadsheetId = process.env.SPREADSHEET_ID;
@@ -460,12 +539,60 @@ app.get('/api/faktury/nezaplatene-compact', authenticateApiKey, async (req, res)
       });
     }
 
-    // Zoraď podľa dátumu splatnosti (najstaršie prvé)
-    faktury.sort((a, b) => {
-      if (!a.datum_splatnosti) return 1;
-      if (!b.datum_splatnosti) return -1;
-      return a.datum_splatnosti.localeCompare(b.datum_splatnosti);
-    });
+    // Doplnkové filtre
+    if (partner) {
+      faktury = faktury.filter(f => 
+        f.partner.toLowerCase().includes(partner.toLowerCase())
+      );
+    }
+
+    if (vystavil) {
+      faktury = faktury.filter(f => 
+        f.vystavil.toLowerCase().includes(vystavil.toLowerCase())
+      );
+    }
+
+    if (min_suma) {
+      const minSuma = parseFloat(min_suma);
+      faktury = faktury.filter(f => f.celkom_s_dph >= minSuma);
+    }
+
+    if (max_suma) {
+      const maxSuma = parseFloat(max_suma);
+      faktury = faktury.filter(f => f.celkom_s_dph <= maxSuma);
+    }
+
+    // Zoradenie
+    if (orderBy) {
+      const dir = direction === 'desc' ? -1 : 1;
+      faktury.sort((a, b) => {
+        let valA = a[orderBy];
+        let valB = b[orderBy];
+
+        // Pre dátumy konvertuj na ISO formát
+        if (orderBy.includes('datum') && valA && valB) {
+          valA = parseSlovakDate(valA) || valA;
+          valB = parseSlovakDate(valB) || valB;
+        }
+
+        // Pre čísla
+        if (typeof valA === 'number' && typeof valB === 'number') {
+          return (valA - valB) * dir;
+        }
+
+        // Pre stringy
+        if (valA < valB) return -1 * dir;
+        if (valA > valB) return 1 * dir;
+        return 0;
+      });
+    } else {
+      // Default: Zoraď podľa dátumu splatnosti (najstaršie prvé)
+      faktury.sort((a, b) => {
+        if (!a.datum_splatnosti) return 1;
+        if (!b.datum_splatnosti) return -1;
+        return a.datum_splatnosti.localeCompare(b.datum_splatnosti);
+      });
+    }
 
     // Limituj počet a vráť iba základné údaje
     const data = faktury.slice(0, limit).map(f => ({

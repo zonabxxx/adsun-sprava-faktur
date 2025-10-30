@@ -100,7 +100,7 @@ paths:
     get:
       operationId: searchFaktury
       summary: Vyhľadá faktúry podľa kritérií
-      description: Filtruje faktúry podľa partnera, dátumu a stavu úhrady
+      description: Filtruje faktúry podľa partnera, dátumu, stavu úhrady, obchodníka, IČO, sumy atď. Podporuje aj zoradenie.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -128,6 +128,55 @@ paths:
           schema:
             type: string
             enum: ["true", "false"]
+        - name: vystavil
+          in: query
+          description: Obchodník/osoba ktorá vystavila faktúru (case-insensitive)
+          schema:
+            type: string
+          example: "Juraj Chlepko"
+        - name: ico
+          in: query
+          description: IČO partnera (presná zhoda)
+          schema:
+            type: string
+          example: "45960470"
+        - name: min_suma
+          in: query
+          description: Minimálna suma faktúry s DPH
+          schema:
+            type: number
+          example: 1000
+        - name: max_suma
+          in: query
+          description: Maximálna suma faktúry s DPH
+          schema:
+            type: number
+          example: 5000
+        - name: mesiac
+          in: query
+          description: Mesiac vystavenia vo formáte YYYY-MM
+          schema:
+            type: string
+          example: "2025-10"
+        - name: rok
+          in: query
+          description: Rok vystavenia vo formáte YYYY
+          schema:
+            type: string
+          example: "2025"
+        - name: orderBy
+          in: query
+          description: Pole podľa ktorého zoradiť (napr. datum_splatnosti, celkom_s_dph, partner)
+          schema:
+            type: string
+          example: "datum_splatnosti"
+        - name: direction
+          in: query
+          description: Smer zoradenia (asc alebo desc)
+          schema:
+            type: string
+            enum: ["asc", "desc"]
+            default: "asc"
       responses:
         '200':
           description: Výsledky vyhľadávania
@@ -147,11 +196,120 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/faktury/nezaplatene-compact:
+    get:
+      operationId: getNezaplateneCompact
+      summary: Kompaktný zoznam nezaplatených faktúr
+      description: |
+        Vráti nezaplatené faktúry v zjednodušenom formáte (iba 7 základných polí).
+        Tento endpoint je optimalizovaný pre menší objem dát a rýchlejšie spracovanie.
+        Ideálny pre zobrazenie zoznamu nezaplatených faktúr v ChatGPT.
+        Podporuje filtrovanie a zoradenie.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: limit
+          in: query
+          description: Maximálny počet faktúr na vrátenie (default 100)
+          schema:
+            type: integer
+            default: 100
+          example: 10
+        - name: po_splatnosti
+          in: query
+          description: Ak true, vráti iba faktúry po splatnosti
+          schema:
+            type: boolean
+          example: false
+        - name: partner
+          in: query
+          description: Názov partnera (hľadá v reťazci, case-insensitive)
+          schema:
+            type: string
+        - name: vystavil
+          in: query
+          description: Obchodník/osoba ktorá vystavila faktúru (case-insensitive)
+          schema:
+            type: string
+          example: "Juraj Chlepko"
+        - name: min_suma
+          in: query
+          description: Minimálna suma faktúry s DPH
+          schema:
+            type: number
+          example: 1000
+        - name: max_suma
+          in: query
+          description: Maximálna suma faktúry s DPH
+          schema:
+            type: number
+          example: 5000
+        - name: orderBy
+          in: query
+          description: Pole podľa ktorého zoradiť (datum_splatnosti, celkom_s_dph, partner, datum_vystavenia)
+          schema:
+            type: string
+          example: "celkom_s_dph"
+        - name: direction
+          in: query
+          description: Smer zoradenia (asc alebo desc)
+          schema:
+            type: string
+            enum: ["asc", "desc"]
+            default: "asc"
+      responses:
+        '200':
+          description: Kompaktný zoznam nezaplatených faktúr
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: OK
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        cislo:
+                          type: string
+                          example: "20251235"
+                        partner:
+                          type: string
+                          example: "Akadémia Andyho Winsona"
+                        datum_vystavenia:
+                          type: string
+                          example: "17.9.2025"
+                        datum_splatnosti:
+                          type: string
+                          example: "1.10.2025"
+                        celkom_s_dph:
+                          type: number
+                          example: 538
+                        vystavil:
+                          type: string
+                          example: "Juraj Martinkových"
+                        mena:
+                          type: string
+                          example: "EUR"
+                  count:
+                    type: integer
+                    description: Počet faktúr vrátených v odpovedi
+                    example: 10
+                  total:
+                    type: integer
+                    description: Celkový počet nezaplatených faktúr
+                    example: 117
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /api/statistiky:
     get:
       operationId: getStatistiky
       summary: Získa základné štatistiky faktúr
-      description: Vráti celkový počet faktúr, sumy, zaplatené a nezaplatené
+      description: Vráti celkový počet faktúr, sumy, zaplatené a nezaplatené (rozdelené na pred a po splatnosti)
       security:
         - ApiKeyAuth: []
       responses:
@@ -169,16 +327,34 @@ paths:
                     properties:
                       celkovy_pocet:
                         type: integer
+                        description: Celkový počet všetkých faktúr
                       celkova_suma:
                         type: number
+                        description: Celková suma všetkých faktúr
                       nezaplatene_pocet:
                         type: integer
+                        description: Celkový počet nezaplatených faktúr
                       nezaplatene_suma:
                         type: number
+                        description: Celková suma nezaplatených faktúr
+                      nezaplatene_pred_splatnostou:
+                        type: integer
+                        description: Počet nezaplatených faktúr ešte pred splatnosťou
+                      nezaplatene_pred_splatnostou_suma:
+                        type: number
+                        description: Suma nezaplatených faktúr pred splatnosťou
+                      nezaplatene_po_splatnosti:
+                        type: integer
+                        description: Počet nezaplatených faktúr po splatnosti
+                      nezaplatene_po_splatnosti_suma:
+                        type: number
+                        description: Suma nezaplatených faktúr po splatnosti
                       zaplatene_pocet:
                         type: integer
+                        description: Počet zaplatených faktúr
                       zaplatene_suma:
                         type: number
+                        description: Suma zaplatených faktúr
                       mena:
                         type: string
                         example: EUR
