@@ -6,6 +6,9 @@ const { google } = require('googleapis');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Lazy loading - Google Sheets client sa vytvorí až keď je potrebný
+let sheetsClientCache = null;
+
 // Middleware
 app.use(cors({
   origin: '*',
@@ -26,8 +29,13 @@ const authenticateApiKey = (req, res, next) => {
   next();
 };
 
-// Google Sheets client
+// Google Sheets client - LAZY LOADING pre rýchly štart
 const getGoogleSheetsClient = async () => {
+  // Použij cache ak už existuje
+  if (sheetsClientCache) {
+    return sheetsClientCache;
+  }
+
   let credentials;
 
   // Pre Railway deployment - použij base64 encoded credentials
@@ -49,7 +57,8 @@ const getGoogleSheetsClient = async () => {
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
     const client = await auth.getClient();
-    return google.sheets({ version: 'v4', auth: client });
+    sheetsClientCache = google.sheets({ version: 'v4', auth: client });
+    return sheetsClientCache;
   }
   
   // Pre lokálny vývoj - použij súbor
@@ -59,7 +68,8 @@ const getGoogleSheetsClient = async () => {
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
     const client = await auth.getClient();
-    return google.sheets({ version: 'v4', auth: client });
+    sheetsClientCache = google.sheets({ version: 'v4', auth: client });
+    return sheetsClientCache;
   }
 
   throw new Error('Google credentials not configured');
