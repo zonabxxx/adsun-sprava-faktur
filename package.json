@@ -7,14 +7,19 @@
     "start": "node server.js",
     "dev": "node server.js"
   },
-  "keywords": ["faktury", "google-sheets", "chatgpt", "api"],
+  "keywords": [
+    "faktury",
+    "google-sheets",
+    "chatgpt",
+    "api"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
+    "axios": "^1.13.1",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
+    "express": "^4.18.2",
     "googleapis": "^126.0.1"
   }
 }
-
