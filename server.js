@@ -134,6 +134,27 @@ const COLUMNS = {
   UVODNY_TEXT: 48                    // AW - Úvodný text
 };
 
+// Helper: Konverzia slovenského dátumu (DD.MM.YYYY) na ISO (YYYY-MM-DD)
+const parseSlovakDate = (dateStr) => {
+  if (!dateStr || dateStr === '') return null;
+  
+  // Ak už je v ISO formáte, vráť ako je
+  if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    return dateStr;
+  }
+  
+  // Slovenský formát DD.MM.YYYY
+  const parts = dateStr.split('.');
+  if (parts.length === 3) {
+    const day = parts[0].padStart(2, '0');
+    const month = parts[1].padStart(2, '0');
+    const year = parts[2];
+    return `${year}-${month}-${day}`;
+  }
+  
+  return null;
+};
+
 // Helper: Konverzia riadku na objekt faktúry
 const rowToFaktura = (row) => {
   return {
@@ -312,7 +333,14 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/health',
       faktury: '/api/faktury',
-      statistiky: '/api/statistiky'
+      statistiky: '/api/statistiky',
+      analytics: {
+        firmy: '/api/analytics/firmy',
+        splatnost: '/api/analytics/splatnost',
+        obchodnici: '/api/analytics/obchodnici',
+        mesacne: '/api/analytics/mesacne',
+        top_klienti: '/api/analytics/top-klienti'
+      }
     }
   });
 });
@@ -671,10 +699,380 @@ app.delete('/api/faktury/:cislo', authenticateApiKey, async (req, res) => {
   }
 });
 
+// ===============================================
+// ROZŠÍRENÉ ANALYTICKÉ ENDPOINTY
+// ===============================================
+
+// GET /api/analytics/firmy - Obrat podľa partnerov/firiem
+app.get('/api/analytics/firmy', authenticateApiKey, async (req, res) => {
+  try {
+    const sheets = await getGoogleSheetsClient();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Data!A:AW",
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length <= 1) {
+      return res.json({ status: 'OK', data: [] });
+    }
+
+    const faktury = rows.slice(1)
+      .filter(row => row[COLUMNS.CISLO])
+      .map(row => rowToFaktura(row));
+
+    // Zoskup podľa partnera
+    const firmy = {};
+    faktury.forEach(f => {
+      const partner = f.partner || 'Nezadaný partner';
+      if (!firmy[partner]) {
+        firmy[partner] = {
+          partner,
+          ico: f.ico,
+          pocet_faktur: 0,
+          celkovy_obrat: 0,
+          zaplatene_suma: 0,
+          nezaplatene_suma: 0,
+          priemernaFaktura: 0
+        };
+      }
+      firmy[partner].pocet_faktur++;
+      firmy[partner].celkovy_obrat += f.celkom_s_dph;
+      
+      if (f.datum_uhrady && f.zostava_uhradit === 0) {
+        firmy[partner].zaplatene_suma += f.celkom_s_dph;
+      } else {
+        firmy[partner].nezaplatene_suma += f.zostava_uhradit;
+      }
+    });
+
+    // Vypočítaj priemernú faktúru a zaokrúhli
+    const data = Object.values(firmy).map(f => ({
+      ...f,
+      celkovy_obrat: Math.round(f.celkovy_obrat * 100) / 100,
+      zaplatene_suma: Math.round(f.zaplatene_suma * 100) / 100,
+      nezaplatene_suma: Math.round(f.nezaplatene_suma * 100) / 100,
+      priemernaFaktura: Math.round((f.celkovy_obrat / f.pocet_faktur) * 100) / 100
+    }));
+
+    // Zoraď podľa obratu (zostupne)
+    data.sort((a, b) => b.celkovy_obrat - a.celkovy_obrat);
+
+    res.json({ 
+      status: 'OK', 
+      data,
+      count: data.length,
+      mena: 'EUR'
+    });
+  } catch (error) {
+    console.error('Error in GET /api/analytics/firmy:', error);
+    res.status(500).json({ status: 'ERROR', message: error.message });
+  }
+});
+
+// GET /api/analytics/splatnost - Analýza dodržiavania termínov splácania
+app.get('/api/analytics/splatnost', authenticateApiKey, async (req, res) => {
+  try {
+    const sheets = await getGoogleSheetsClient();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Data!A:AW",
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length <= 1) {
+      return res.json({ status: 'OK', data: {} });
+    }
+
+    const faktury = rows.slice(1)
+      .filter(row => row[COLUMNS.CISLO])
+      .map(row => rowToFaktura(row));
+
+    // Filtrovať len zaplatené faktúry s dátumom úhrady
+    const zaplatene = faktury.filter(f => f.datum_uhrady && f.datum_splatnosti);
+
+    let vCas = 0;
+    let neskoro = 0;
+    let celkoveDniMeskania = 0;
+    let nezaplatenePoTermine = 0;
+    let nezaplatenePoTermineSuma = 0;
+
+    const dnes = new Date();
+
+    zaplatene.forEach(f => {
+      const isoSplatnost = parseSlovakDate(f.datum_splatnosti);
+      const isoUhrady = parseSlovakDate(f.datum_uhrady);
+      
+      if (!isoSplatnost || !isoUhrady) return;
+      
+      const datumSplatnosti = new Date(isoSplatnost);
+      const datumUhrady = new Date(isoUhrady);
+      
+      if (datumUhrady <= datumSplatnosti) {
+        vCas++;
+      } else {
+        neskoro++;
+        const dniMeskania = Math.ceil((datumUhrady - datumSplatnosti) / (1000 * 60 * 60 * 24));
+        celkoveDniMeskania += dniMeskania;
+      }
+    });
+
+    // Nezaplatené po termíne
+    const nezaplatene = faktury.filter(f => (!f.datum_uhrady || f.zostava_uhradit > 0) && f.datum_splatnosti);
+    nezaplatene.forEach(f => {
+      const isoSplatnost = parseSlovakDate(f.datum_splatnosti);
+      if (!isoSplatnost) return;
+      
+      const datumSplatnosti = new Date(isoSplatnost);
+      if (dnes > datumSplatnosti) {
+        nezaplatenePoTermine++;
+        nezaplatenePoTermineSuma += f.zostava_uhradit;
+      }
+    });
+
+    const priemerneMeskanie = neskoro > 0 ? Math.round(celkoveDniMeskania / neskoro) : 0;
+    const percentoVCas = zaplatene.length > 0 ? Math.round((vCas / zaplatene.length) * 100) : 0;
+
+    res.json({
+      status: 'OK',
+      data: {
+        zaplatene_celkom: zaplatene.length,
+        zaplatene_v_cas: vCas,
+        zaplatene_neskoro: neskoro,
+        percento_v_cas: percentoVCas,
+        priemerne_meskanie_dni: priemerneMeskanie,
+        nezaplatene_po_termine: nezaplatenePoTermine,
+        nezaplatene_po_termine_suma: Math.round(nezaplatenePoTermineSuma * 100) / 100,
+        mena: 'EUR'
+      }
+    });
+  } catch (error) {
+    console.error('Error in GET /api/analytics/splatnost:', error);
+    res.status(500).json({ status: 'ERROR', message: error.message });
+  }
+});
+
+// GET /api/analytics/obchodnici - Štatistiky podľa obchodníkov (kto vystavoval)
+app.get('/api/analytics/obchodnici', authenticateApiKey, async (req, res) => {
+  try {
+    const sheets = await getGoogleSheetsClient();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Data!A:AW",
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length <= 1) {
+      return res.json({ status: 'OK', data: [] });
+    }
+
+    const faktury = rows.slice(1)
+      .filter(row => row[COLUMNS.CISLO])
+      .map(row => rowToFaktura(row));
+
+    // Zoskup podľa vystavovateľa
+    const obchodnici = {};
+    faktury.forEach(f => {
+      const vystavil = f.vystavil || 'Nezadaný';
+      if (!obchodnici[vystavil]) {
+        obchodnici[vystavil] = {
+          vystavil,
+          pocet_faktur: 0,
+          celkova_suma: 0,
+          zaplatene_pocet: 0,
+          zaplatene_suma: 0,
+          nezaplatene_pocet: 0,
+          nezaplatene_suma: 0,
+          unikatni_klienti: new Set()
+        };
+      }
+      obchodnici[vystavil].pocet_faktur++;
+      obchodnici[vystavil].celkova_suma += f.celkom_s_dph;
+      obchodnici[vystavil].unikatni_klienti.add(f.partner);
+      
+      if (f.datum_uhrady && f.zostava_uhradit === 0) {
+        obchodnici[vystavil].zaplatene_pocet++;
+        obchodnici[vystavil].zaplatene_suma += f.celkom_s_dph;
+      } else {
+        obchodnici[vystavil].nezaplatene_pocet++;
+        obchodnici[vystavil].nezaplatene_suma += f.zostava_uhradit;
+      }
+    });
+
+    // Konvertuj Set na počet a zaokrúhli
+    const data = Object.values(obchodnici).map(o => ({
+      vystavil: o.vystavil,
+      pocet_faktur: o.pocet_faktur,
+      celkova_suma: Math.round(o.celkova_suma * 100) / 100,
+      zaplatene_pocet: o.zaplatene_pocet,
+      zaplatene_suma: Math.round(o.zaplatene_suma * 100) / 100,
+      nezaplatene_pocet: o.nezaplatene_pocet,
+      nezaplatene_suma: Math.round(o.nezaplatene_suma * 100) / 100,
+      pocet_klientov: o.unikatni_klienti.size,
+      priemerna_faktura: Math.round((o.celkova_suma / o.pocet_faktur) * 100) / 100
+    }));
+
+    // Zoraď podľa celkovej sumy (zostupne)
+    data.sort((a, b) => b.celkova_suma - a.celkova_suma);
+
+    res.json({ 
+      status: 'OK', 
+      data,
+      count: data.length,
+      mena: 'EUR'
+    });
+  } catch (error) {
+    console.error('Error in GET /api/analytics/obchodnici:', error);
+    res.status(500).json({ status: 'ERROR', message: error.message });
+  }
+});
+
+// GET /api/analytics/mesacne - Mesačné štatistiky (trendová analýza)
+app.get('/api/analytics/mesacne', authenticateApiKey, async (req, res) => {
+  try {
+    const sheets = await getGoogleSheetsClient();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Data!A:AW",
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length <= 1) {
+      return res.json({ status: 'OK', data: [] });
+    }
+
+    const faktury = rows.slice(1)
+      .filter(row => row[COLUMNS.CISLO])
+      .map(row => rowToFaktura(row));
+
+    // Zoskup podľa mesiaca (YYYY-MM)
+    const mesacne = {};
+    faktury.forEach(f => {
+      if (!f.datum_vystavenia) return;
+      
+      // Konvertuj slovenský dátum na ISO formát
+      const isoDate = parseSlovakDate(f.datum_vystavenia);
+      if (!isoDate) return;
+      
+      const mesiac = isoDate.substring(0, 7); // YYYY-MM
+      if (!mesacne[mesiac]) {
+        mesacne[mesiac] = {
+          mesiac,
+          pocet_faktur: 0,
+          celkova_suma: 0,
+          zaplatene_pocet: 0,
+          zaplatene_suma: 0,
+          nezaplatene_pocet: 0,
+          nezaplatene_suma: 0
+        };
+      }
+      mesacne[mesiac].pocet_faktur++;
+      mesacne[mesiac].celkova_suma += f.celkom_s_dph;
+      
+      if (f.datum_uhrady && f.zostava_uhradit === 0) {
+        mesacne[mesiac].zaplatene_pocet++;
+        mesacne[mesiac].zaplatene_suma += f.celkom_s_dph;
+      } else {
+        mesacne[mesiac].nezaplatene_pocet++;
+        mesacne[mesiac].nezaplatene_suma += f.zostava_uhradit;
+      }
+    });
+
+    // Zaokrúhli a zoraď podľa mesiaca
+    const data = Object.values(mesacne)
+      .map(m => ({
+        ...m,
+        celkova_suma: Math.round(m.celkova_suma * 100) / 100,
+        zaplatene_suma: Math.round(m.zaplatene_suma * 100) / 100,
+        nezaplatene_suma: Math.round(m.nezaplatene_suma * 100) / 100,
+        priemerna_faktura: Math.round((m.celkova_suma / m.pocet_faktur) * 100) / 100
+      }))
+      .sort((a, b) => b.mesiac.localeCompare(a.mesiac)); // Zostupne (najnovší mesiac hore)
+
+    res.json({ 
+      status: 'OK', 
+      data,
+      count: data.length,
+      mena: 'EUR'
+    });
+  } catch (error) {
+    console.error('Error in GET /api/analytics/mesacne:', error);
+    res.status(500).json({ status: 'ERROR', message: error.message });
+  }
+});
+
+// GET /api/analytics/top-klienti - Top klientov podľa obratu
+app.get('/api/analytics/top-klienti', authenticateApiKey, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    
+    const sheets = await getGoogleSheetsClient();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Data!A:AW",
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length <= 1) {
+      return res.json({ status: 'OK', data: [] });
+    }
+
+    const faktury = rows.slice(1)
+      .filter(row => row[COLUMNS.CISLO])
+      .map(row => rowToFaktura(row));
+
+    // Zoskup podľa partnera
+    const klienti = {};
+    faktury.forEach(f => {
+      const partner = f.partner || 'Nezadaný partner';
+      if (!klienti[partner]) {
+        klienti[partner] = {
+          partner,
+          ico: f.ico,
+          celkovy_obrat: 0,
+          pocet_faktur: 0
+        };
+      }
+      klienti[partner].celkovy_obrat += f.celkom_s_dph;
+      klienti[partner].pocet_faktur++;
+    });
+
+    // Zoraď a vezmi top N
+    const data = Object.values(klienti)
+      .map(k => ({
+        ...k,
+        celkovy_obrat: Math.round(k.celkovy_obrat * 100) / 100,
+        priemerna_faktura: Math.round((k.celkovy_obrat / k.pocet_faktur) * 100) / 100
+      }))
+      .sort((a, b) => b.celkovy_obrat - a.celkovy_obrat)
+      .slice(0, limit);
+
+    res.json({ 
+      status: 'OK', 
+      data,
+      count: data.length,
+      mena: 'EUR'
+    });
+  } catch (error) {
+    console.error('Error in GET /api/analytics/top-klienti:', error);
+    res.status(500).json({ status: 'ERROR', message: error.message });
+  }
+});
+
 // Spustenie servera
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 Faktúry API beží na http://0.0.0.0:${PORT}`);
-  console.log(`📊 Endpoints:`);
+  console.log(`📊 Základné Endpoints:`);
   console.log(`   GET    /health`);
   console.log(`   GET    /api/faktury`);
   console.log(`   GET    /api/faktury/:cislo`);
@@ -684,6 +1082,12 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   GET    /api/faktury/search`);
   console.log(`   GET    /api/statistiky`);
   console.log(`   DELETE /api/faktury/:cislo`);
+  console.log(`\n📈 Analytické Endpoints:`);
+  console.log(`   GET    /api/analytics/firmy`);
+  console.log(`   GET    /api/analytics/splatnost`);
+  console.log(`   GET    /api/analytics/obchodnici`);
+  console.log(`   GET    /api/analytics/mesacne`);
+  console.log(`   GET    /api/analytics/top-klienti`);
   console.log(`\n🔑 API Key: ${process.env.API_KEY ? '✓ nastavený' : '✗ CHÝBA!'}`);
   console.log(`📄 Spreadsheet ID: ${process.env.SPREADSHEET_ID ? '✓ nastavený' : '✗ CHÝBA!'}`);
   console.log(`🔐 Google Credentials: ${process.env.GOOGLE_CREDENTIALS_PATH || process.env.GOOGLE_CREDENTIALS_BASE64 ? '✓ nastavené' : '✗ CHÝBAJÚ!'}\n`);
