@@ -1520,33 +1520,15 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     });
     
     const rows = response.data.values;
-    let lastInvoiceDate = null;
     let lastInvoiceNumber = null;
     
     if (rows && rows.length > 1) {
-      // Nájdi najnovšiu faktúru podľa čísla (nie podľa pozície v tabuľke)
-      let maxNumber = 0;
-      let maxDateStr = null;
-      
-      for (let i = 1; i < rows.length; i++) {
-        const row = rows[i];
-        const cislo = row[COLUMNS.CISLO];
-        const datum = row[COLUMNS.DATUM_VYSTAVENIA];
-        
-        if (cislo && datum) {
-          // Parsuj číslo faktúry (napr. "20251443" -> 20251443)
-          const numValue = parseInt(cislo.toString().replace(/\D/g, ''));
-          
-          if (numValue > maxNumber) {
-            maxNumber = numValue;
-            lastInvoiceNumber = cislo;
-            maxDateStr = datum;
-          }
-        }
-      }
+      // Posledná (najnovšia) faktúra je na VRCHU tabuľky (riadok 2 = index 1)
+      const firstRow = rows[1];
+      lastInvoiceNumber = firstRow[COLUMNS.CISLO];
+      const lastInvoiceDate = firstRow[COLUMNS.DATUM_VYSTAVENIA];
       
       if (lastInvoiceNumber) {
-        lastInvoiceDate = maxDateStr;
         console.log(`📅 Posledná faktúra v Sheets: ${lastInvoiceNumber} (${lastInvoiceDate})`);
       }
     }
@@ -1554,11 +1536,15 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     // Krok 2: Získaj Flowii token
     const token = await getFlowiiToken();
     
-    // Krok 3: Stiahni Pohoda XML export (VŽDY posledných 60 dní, kontrolujeme čísla nie dátumy!)
-    const fromTimestamp = Math.floor(Date.now() / 1000) - (60 * 24 * 60 * 60); // 60 dní späť
+    // Krok 3: Stiahni Pohoda XML export (posledných 30 dní)
+    const fromTimestamp = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60); // 30 dní späť
     const toTimestamp = Math.floor(Date.now() / 1000);
     
-    console.log(`📥 Sťahujem Pohoda XML export (posledných 60 dní)...`);
+    console.log(`📥 Sťahujem Pohoda XML export (posledných 30 dní)...`);
+    
+    // Ak máme poslednú faktúru, použijeme ju ako referenčné číslo
+    const lastInvoiceNumValue = lastInvoiceNumber ? parseInt(lastInvoiceNumber.toString().replace(/\D/g, '')) : 0;
+    console.log(`🔢 Budem pridávať len faktúry s číslom vyšším ako ${lastInvoiceNumber || 'žiadna (prvý sync)'}`);
     
     const xmlResponse = await axios.get(
       `${process.env.FLOWII_API_URL}/documents/export/pohoda?companyId=${process.env.FLOWII_COMPANY_ID}&filter[issued-from]=${fromTimestamp}&filter[issued-to]=${toTimestamp}`,
@@ -1594,9 +1580,17 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
         continue;
       }
       
+      // Kontrola 1: Existuje už v Sheets?
       const exists = rows && rows.some(row => row[COLUMNS.CISLO] === cislo);
       if (exists) {
         console.log(`⏭️ Faktúra ${cislo} už existuje, preskakujem`);
+        continue;
+      }
+      
+      // Kontrola 2: Je číslo vyššie ako posledná faktúra?
+      const cisloNum = parseInt(cislo.toString().replace(/\D/g, ''));
+      if (cisloNum <= lastInvoiceNumValue) {
+        console.log(`⏭️ Faktúra ${cislo} je stará (číslo ${cisloNum} <= ${lastInvoiceNumValue}), preskakujem`);
         continue;
       }
       
