@@ -17,6 +17,12 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Request logger - aby sme videli čo Railway volá
+app.use((req, res, next) => {
+  console.log(`📥 ${req.method} ${req.path} from ${req.ip}`);
+  next();
+});
+
 // Autentifikácia
 const authenticateApiKey = (req, res, next) => {
   const apiKey = req.headers['x-faktury-api-key'];
