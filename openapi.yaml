@@ -587,22 +587,7 @@ paths:
     post:
       operationId: syncFlowiiInvoices
       summary: Synchronizuje faktúry z Flowii do Google Sheets
-      description: |
-        Stiahne nové faktúry z Flowii API cez Pohoda XML export a pridá ich do Google Sheets.
-        
-        **Proces:**
-        - Nájde poslednú faktúru v Google Sheets
-        - Stiahne Pohoda XML export z Flowii (faktúry za posledných 30 dní)
-        - Extrahuje všetky údaje (partner, adresy, sumy, firma, vystaviteľ)
-        - Počíta sumy zo všetkých položiek
-        - Používa slovenský formát (dátumy DD.MM.YYYY, čísla s čiarkou)
-        - Pridáva faktúry na začiatok zoznamu (riadok 2)
-        - Kontroluje duplikáty
-        
-        **Kedy volať:**
-        - Pri otvorení konverzácie s GPT
-        - Keď používateľ sa spýta na nové faktúry
-        - Raz denne pre pravidelný update
+      description: Stiahne nové faktúry z Flowii (Pohoda XML export), extrahuje údaje, počíta sumy a pridá ich na začiatok Google Sheets so slovenským formátom. Kontroluje duplikáty. Volaj pri otvorení konverzácie alebo na požiadanie.
       security:
         - ApiKeyAuth: []
       responses:
@@ -638,23 +623,7 @@ paths:
     post:
       operationId: syncPaymentStatus
       summary: Aktualizuje stavy úhrad faktúr z Flowii
-      description: |
-        Skontroluje nezaplatené faktúry v Google Sheets a aktualizuje ich stav podľa Flowii API.
-        
-        **Proces:**
-        - Nájde všetky nezaplatené faktúry v Google Sheets
-        - Skontroluje ich stav vo Flowii API (cez Partners endpoint)
-        - Ak je faktúra uhradená vo Flowii (`unpaid = 0`), zaktualizuje Google Sheets:
-          - Nastaví "Zostáva uhradiť" na 0,00
-          - Vyplní dátum úhrady (dnešný dátum)
-        
-        **Upozornenie:**
-        Tento endpoint môže trvať dlhšie (min. 1-2 minúty) kvôli rate limitom Flowii API.
-        
-        **Kedy volať:**
-        - Raz denne alebo týždenne
-        - Pred generovaním reportov o nezaplatených faktúrach
-        - Keď používateľ potrebuje aktuálny stav úhrad
+      description: Nájde nezaplatené faktúry v Google Sheets a skontroluje ich stav vo Flowii API. Ak je faktúra uhradená (unpaid=0), zaktualizuje Google Sheets. Môže trvať 1-2 minúty. Volaj raz denne alebo pred reportami o nezaplatených faktúrach.
       security:
         - ApiKeyAuth: []
       responses:
