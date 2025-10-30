@@ -1568,6 +1568,9 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     const dataSheet = metadata.data.sheets.find(s => s.properties.title === 'Data');
     const sheetId = dataSheet ? dataSheet.properties.sheetId : 0;
     
+    // KROK A: Zbieraj všetky nové faktúry (ešte nepridávaj do Sheets!)
+    const invoicesToAdd = [];
+    
     for (const invoiceXml of invoiceMatches) {
       const get = (tag) => {
         const match = invoiceXml.match(new RegExp(`<${tag}[^>]*>([^<]+)<\/${tag}>`));
@@ -1675,6 +1678,16 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
       row[39] = sumaBezDPH.toFixed(2).replace('.', ',');
       row[40] = sumaSDPH.toFixed(2).replace('.', ',');
       
+      // Pridaj do zoznamu na spracovanie (ešte NEVKLADAJ do Sheets!)
+      invoicesToAdd.push({ cislo, cisloNum, row });
+    }
+    
+    // KROK B: Zoraď faktúry od najnovšej po najstaršiu (podľa čísla)
+    invoicesToAdd.sort((a, b) => b.cisloNum - a.cisloNum);
+    console.log(`🔢 Zoradené faktúry (najnovšie prvé): ${invoicesToAdd.map(inv => inv.cislo).join(', ')}`);
+    
+    // KROK C: Pridaj faktúry do Sheets (najnovšie prvé)
+    for (const invoice of invoicesToAdd) {
       // Vlož na začiatok (riadok 2)
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId,
@@ -1692,10 +1705,11 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
         spreadsheetId,
         range: 'Data!A2:AW2',
         valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [row] }
+        requestBody: { values: [invoice.row] }
       });
       
-      newInvoices.push(row);
+      newInvoices.push(invoice.row);
+      console.log(`  ✅ Pridané: ${invoice.cislo}`);
       await delay(500);
     }
     
