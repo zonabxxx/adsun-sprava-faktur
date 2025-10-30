@@ -587,7 +587,7 @@ paths:
     post:
       operationId: syncFlowiiInvoices
       summary: Synchronizuje faktúry z Flowii do Google Sheets
-      description: Stiahne nové faktúry z Flowii (Pohoda XML export), extrahuje údaje, počíta sumy a pridá ich na začiatok Google Sheets so slovenským formátom. Kontroluje duplikáty. Volaj pri otvorení konverzácie alebo na požiadanie.
+      description: Stiahne faktúry z Flowii (30 dní), nájde poslednú v Sheets, pridá len nové s vyšším číslom. Extrahuje partnera, adresy, sumy. Slovenský formát. Zoradí od najnovšej. Volaj pri otvorení konverzácie.
       security:
         - ApiKeyAuth: []
       responses:
