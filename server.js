@@ -1609,9 +1609,27 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
       };
       
       // Debug: Pozri čo sa extrahuje z partnerSection
-      const partnerName = getFromSection('name', partnerSection);
-      console.log(`  📋 Partner: ${partnerName || '(prázdne!)'}`);
+      let partnerName = getFromSection('name', partnerSection);
       
+      // Ak nie je 'name', skús 'company'
+      if (!partnerName) {
+        partnerName = getFromSection('company', partnerSection);
+      }
+      
+      // Ak stále nie je, skús 'surname' + 'firstName' (fyzická osoba)
+      if (!partnerName) {
+        const surname = getFromSection('surname', partnerSection);
+        const firstName = getFromSection('firstName', partnerSection);
+        if (surname || firstName) {
+          partnerName = `${firstName} ${surname}`.trim();
+        }
+      }
+      
+      console.log(`  📋 Partner: ${partnerName || '(prázdne!)'}`);
+      if (!partnerName && partnerSection) {
+        console.log(`  ⚠️ partnerSection existuje, ale name/company/surname/firstName sú prázdne!`);
+        console.log(`  🔍 partnerSection preview: ${partnerSection[0].substring(0, 200)}...`);
+      }
       const toSlovakDate = (iso) => {
         if (!iso) return '';
         const [y, m, d] = iso.split('-');
