@@ -1554,12 +1554,11 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     // Krok 2: Získaj Flowii token
     const token = await getFlowiiToken();
     
-    // Krok 3: Stiahni Pohoda XML export (posledných 30 dní)
-    const fromDate = lastInvoiceDate ? parseSlovakDate(lastInvoiceDate) : null;
-    const fromTimestamp = fromDate ? Math.floor(new Date(fromDate + 'T00:00:00').getTime() / 1000) : Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60);
+    // Krok 3: Stiahni Pohoda XML export (VŽDY posledných 60 dní, kontrolujeme čísla nie dátumy!)
+    const fromTimestamp = Math.floor(Date.now() / 1000) - (60 * 24 * 60 * 60); // 60 dní späť
     const toTimestamp = Math.floor(Date.now() / 1000);
     
-    console.log(`📥 Sťahujem Pohoda XML export...`);
+    console.log(`📥 Sťahujem Pohoda XML export (posledných 60 dní)...`);
     
     const xmlResponse = await axios.get(
       `${process.env.FLOWII_API_URL}/documents/export/pohoda?companyId=${process.env.FLOWII_COMPANY_ID}&filter[issued-from]=${fromTimestamp}&filter[issued-to]=${toTimestamp}`,
