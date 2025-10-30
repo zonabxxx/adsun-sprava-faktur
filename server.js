@@ -413,7 +413,7 @@ app.get('/api/faktury/search', authenticateApiKey, async (req, res) => {
     if (zaplatene !== undefined) {
       const jeZaplatene = zaplatene === 'true' || zaplatene === '1';
       data = data.filter(f => 
-        jeZaplatene ? (f.datum_uhrady && f.zostava_uhradit === 0) : (!f.datum_uhrady || f.zostava_uhradit > 0)
+        jeZaplatene ? (f.datum_uhrady && f.datum_uhrady !== '') : (!f.datum_uhrady || f.datum_uhrady === '')
       );
     }
 
@@ -632,13 +632,13 @@ app.get('/api/statistiky', authenticateApiKey, async (req, res) => {
     const celkovy_pocet = faktury.length;
     const celkova_suma = faktury.reduce((sum, f) => sum + f.celkom_s_dph, 0);
 
-    const zaplatene = faktury.filter(f => f.datum_uhrady && f.zostava_uhradit === 0);
+    const zaplatene = faktury.filter(f => f.datum_uhrady && f.datum_uhrady !== '');
     const zaplatene_pocet = zaplatene.length;
     const zaplatene_suma = zaplatene.reduce((sum, f) => sum + f.celkom_s_dph, 0);
 
-    const nezaplatene = faktury.filter(f => !f.datum_uhrady || f.zostava_uhradit > 0);
+    const nezaplatene = faktury.filter(f => !f.datum_uhrady || f.datum_uhrady === '');
     const nezaplatene_pocet = nezaplatene.length;
-    const nezaplatene_suma = nezaplatene.reduce((sum, f) => sum + f.zostava_uhradit, 0);
+    const nezaplatene_suma = nezaplatene.reduce((sum, f) => sum + f.celkom_s_dph, 0);
 
     res.json({
       status: 'OK',
@@ -742,10 +742,10 @@ app.get('/api/analytics/firmy', authenticateApiKey, async (req, res) => {
       firmy[partner].pocet_faktur++;
       firmy[partner].celkovy_obrat += f.celkom_s_dph;
       
-      if (f.datum_uhrady && f.zostava_uhradit === 0) {
+      if (f.datum_uhrady && f.datum_uhrady !== '') {
         firmy[partner].zaplatene_suma += f.celkom_s_dph;
       } else {
-        firmy[partner].nezaplatene_suma += f.zostava_uhradit;
+        firmy[partner].nezaplatene_suma += f.celkom_s_dph;
       }
     });
 
@@ -897,12 +897,12 @@ app.get('/api/analytics/obchodnici', authenticateApiKey, async (req, res) => {
       obchodnici[vystavil].celkova_suma += f.celkom_s_dph;
       obchodnici[vystavil].unikatni_klienti.add(f.partner);
       
-      if (f.datum_uhrady && f.zostava_uhradit === 0) {
+      if (f.datum_uhrady && f.datum_uhrady !== '') {
         obchodnici[vystavil].zaplatene_pocet++;
         obchodnici[vystavil].zaplatene_suma += f.celkom_s_dph;
       } else {
         obchodnici[vystavil].nezaplatene_pocet++;
-        obchodnici[vystavil].nezaplatene_suma += f.zostava_uhradit;
+        obchodnici[vystavil].nezaplatene_suma += f.celkom_s_dph;
       }
     });
 
@@ -978,12 +978,12 @@ app.get('/api/analytics/mesacne', authenticateApiKey, async (req, res) => {
       mesacne[mesiac].pocet_faktur++;
       mesacne[mesiac].celkova_suma += f.celkom_s_dph;
       
-      if (f.datum_uhrady && f.zostava_uhradit === 0) {
+      if (f.datum_uhrady && f.datum_uhrady !== '') {
         mesacne[mesiac].zaplatene_pocet++;
         mesacne[mesiac].zaplatene_suma += f.celkom_s_dph;
       } else {
         mesacne[mesiac].nezaplatene_pocet++;
-        mesacne[mesiac].nezaplatene_suma += f.zostava_uhradit;
+        mesacne[mesiac].nezaplatene_suma += f.celkom_s_dph;
       }
     });
 
@@ -1150,7 +1150,10 @@ const getFlowiiOrders = async (createdFrom = null) => {
   }
 };
 
-// Získanie dokumentov (faktúr) pre konkrétnu Order
+// Helper pre rate limiting - čakanie medzi requestmi
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Získanie dokumentov (faktúr) pre konkrétnu Order s rate limiting
 const getFlowiiOrderDocuments = async (orderId) => {
   const token = await getFlowiiToken();
 
@@ -1169,6 +1172,13 @@ const getFlowiiOrderDocuments = async (orderId) => {
     const invoices = (response.data.data || []).filter(doc => doc.attributes.type === 4);
     return invoices;
   } catch (error) {
+    // Ak je rate limit error, čakaj a skús znova
+    if (error.response?.data?.errors?.[0]?.title?.includes('quota exceeded')) {
+      console.log(`⏳ Rate limit - čakám 60s pre order ${orderId}...`);
+      await delay(60000); // Čakaj 60 sekúnd
+      return getFlowiiOrderDocuments(orderId); // Skús znova
+    }
+    
     console.error(`❌ Chyba pri získavaní dokumentov pre order ${orderId}:`, error.response?.data || error.message);
     return [];
   }
@@ -1250,10 +1260,21 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     }
     
     // Krok 3: Pre každú Order získaj dokumenty (faktúry)
-    const newInvoices = [];
+    // Limituj na max 50 orders aby sme nepreťažili API a neprekročili timeout
+    const ordersToProcess = orders.slice(0, 50);
+    console.log(`📦 Spracovávam ${ordersToProcess.length} z ${orders.length} orders...`);
     
-    for (const order of orders) {
+    const newInvoices = [];
+    let processedCount = 0;
+    
+    for (const order of ordersToProcess) {
+      processedCount++;
+      console.log(`🔄 Spracovávam order ${processedCount}/${ordersToProcess.length} (ID: ${order.id})...`);
+      
       const documents = await getFlowiiOrderDocuments(order.id);
+      
+      // Malý delay medzi requestmi (650ms = ~90 requestov/minútu)
+      await delay(650);
       
       for (const doc of documents) {
         // Skontroluj či faktúra už existuje v Google Sheets
