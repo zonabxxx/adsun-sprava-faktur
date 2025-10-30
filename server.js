@@ -1235,21 +1235,48 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     
     const rows = response.data.values;
     let lastInvoiceDate = null;
+    let lastInvoiceNumber = null;
     
     if (rows && rows.length > 1) {
-      // Nájdi najnovšiu faktúru
-      for (let i = rows.length - 1; i >= 1; i--) {
+      // Nájdi najnovšiu faktúru podľa čísla (nie podľa pozície v tabuľke)
+      let maxNumber = 0;
+      let maxDateStr = null;
+      
+      for (let i = 1; i < rows.length; i++) {
         const row = rows[i];
-        if (row[COLUMNS.CISLO] && row[COLUMNS.DATUM_VYSTAVENIA]) {
-          lastInvoiceDate = row[COLUMNS.DATUM_VYSTAVENIA];
-          console.log(`📅 Posledná faktúra v Sheets: ${row[COLUMNS.CISLO]} (${lastInvoiceDate})`);
-          break;
+        const cislo = row[COLUMNS.CISLO];
+        const datum = row[COLUMNS.DATUM_VYSTAVENIA];
+        
+        if (cislo && datum) {
+          // Parsuj číslo faktúry (napr. "20251443" -> 20251443)
+          const numValue = parseInt(cislo.toString().replace(/\D/g, ''));
+          
+          if (numValue > maxNumber) {
+            maxNumber = numValue;
+            lastInvoiceNumber = cislo;
+            maxDateStr = datum;
+          }
         }
+      }
+      
+      if (lastInvoiceNumber) {
+        lastInvoiceDate = maxDateStr;
+        console.log(`📅 Posledná faktúra v Sheets: ${lastInvoiceNumber} (${lastInvoiceDate})`);
       }
     }
     
     // Krok 2: Získaj Orders z Flowii (od posledného dátumu)
-    const orders = await getFlowiiOrders(lastInvoiceDate);
+    // Konvertuj slovenský dátum formát (DD.MM.YYYY) na ISO (YYYY-MM-DD)
+    let isoDate = null;
+    if (lastInvoiceDate) {
+      const parsed = parseSlovakDate(lastInvoiceDate);
+      if (parsed) {
+        isoDate = parsed;
+        console.log(`📅 Konvertovaný dátum pre Flowii API: ${isoDate}`);
+      }
+    }
+    
+    const orders = await getFlowiiOrders(isoDate);
     
     if (orders.length === 0) {
       return res.json({
