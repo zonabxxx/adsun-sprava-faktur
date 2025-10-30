@@ -635,8 +635,8 @@ app.delete('/api/faktury/:cislo', authenticateApiKey, async (req, res) => {
 });
 
 // Spustenie servera
-app.listen(PORT, () => {
-  console.log(`\n🚀 Faktúry API beží na http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n🚀 Faktúry API beží na http://0.0.0.0:${PORT}`);
   console.log(`📊 Endpoints:`);
   console.log(`   GET    /health`);
   console.log(`   GET    /api/faktury`);
