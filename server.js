@@ -132,7 +132,9 @@ const COLUMNS = {
   PODKATEGORIA: 45,                  // AT - Podkategória
   CISLO_ZAKAZKY: 46,                 // AU - Číslo zákazky
   STREDISKO: 47,                     // AV - Stredisko
-  UVODNY_TEXT: 48                    // AW - Úvodný text
+  UVODNY_TEXT: 48,                   // AW - Úvodný text
+  TYP_ZAKAZKY: 49,                   // AX - Typ zákazky
+  PODTYP_ZAKAZKY: 50                 // AY - Podtyp zákazky
 };
 
 // Helper: Konverzia slovenského dátumu (DD.MM.YYYY) na ISO (YYYY-MM-DD)
@@ -1470,12 +1472,165 @@ const getFlowiiPartnerDocuments = async (partnerId) => {
   }
 };
 
+// Cache pre order types (aby sme nevolali API opakovane pre ten istý typ)
+const orderTypesCache = {};
+
+// Získanie detailov zákazky (order) z Flowii API
+const getFlowiiOrder = async (orderId) => {
+  const token = await getFlowiiToken();
+
+  try {
+    const response = await axios.get(
+      `${process.env.FLOWII_API_URL}/orders/${orderId}?companyId=${process.env.FLOWII_COMPANY_ID}`,
+      {
+        headers: {
+          'Api-Key': process.env.FLOWII_API_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+
+    return response.data.data;
+  } catch (error) {
+    console.error(`❌ Chyba pri získavaní order ${orderId}:`, error.response?.data || error.message);
+    return null;
+  }
+};
+
+// Získanie typu zákazky (order type) z Flowii API
+const getFlowiiOrderType = async (typeId) => {
+  // Skontroluj cache
+  if (orderTypesCache[typeId]) {
+    return orderTypesCache[typeId];
+  }
+
+  const token = await getFlowiiToken();
+
+  try {
+    const response = await axios.get(
+      `${process.env.FLOWII_API_URL}/ordertypes/${typeId}?companyId=${process.env.FLOWII_COMPANY_ID}`,
+      {
+        headers: {
+          'Api-Key': process.env.FLOWII_API_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+
+    const typeName = response.data.data.attributes.name;
+    orderTypesCache[typeId] = typeName;
+    return typeName;
+  } catch (error) {
+    console.error(`❌ Chyba pri získavaní order type ${typeId}:`, error.response?.data || error.message);
+    return null;
+  }
+};
+
+// Získanie detailov dokumentu (faktúry) z Flowii API vrátane order-allocations
+const getFlowiiDocument = async (documentId) => {
+  const token = await getFlowiiToken();
+
+  try {
+    const response = await axios.get(
+      `${process.env.FLOWII_API_URL}/documents/${documentId}?companyId=${process.env.FLOWII_COMPANY_ID}`,
+      {
+        headers: {
+          'Api-Key': process.env.FLOWII_API_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+
+    return response.data.data;
+  } catch (error) {
+    console.error(`❌ Chyba pri získavaní dokumentu ${documentId}:`, error.response?.data || error.message);
+    return null;
+  }
+};
+
+// Získanie typu a podtypu zákazky pre faktúru
+const getOrderTypeAndSubtypeForInvoice = async (invoiceNumber) => {
+  try {
+    // Krok 1: Vyhľadaj dokument podľa čísla faktúry
+    const token = await getFlowiiToken();
+    
+    // Skús najprv vyhľadať cez search
+    const searchResponse = await axios.get(
+      `${process.env.FLOWII_API_URL}/documents?companyId=${process.env.FLOWII_COMPANY_ID}&filter[search-text]=${invoiceNumber}&page[size]=10`,
+      {
+        headers: {
+          'Api-Key': process.env.FLOWII_API_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+
+    const documents = searchResponse.data.data || [];
+    const invoice = documents.find(doc => 
+      doc.attributes['serial-nr'] === invoiceNumber && 
+      doc.attributes.type === 4 // Typ 4 = Faktúra
+    );
+
+    if (!invoice) {
+      console.log(`⚠️ Faktúra ${invoiceNumber} nenájdená cez Flowii API`);
+      return { type: '', subtype: '' };
+    }
+
+    // Krok 2: Získaj detaily dokumentu vrátane order-allocations
+    const invoiceDetails = await getFlowiiDocument(invoice.id);
+    
+    if (!invoiceDetails || !invoiceDetails.relationships?.['order-allocations']?.data) {
+      console.log(`⚠️ Faktúra ${invoiceNumber} nemá priradené žiadne zákazky`);
+      return { type: '', subtype: '' };
+    }
+
+    const orderAllocations = invoiceDetails.relationships['order-allocations'].data;
+    if (orderAllocations.length === 0) {
+      return { type: '', subtype: '' };
+    }
+
+    // Krok 3: Vezmi prvú zákazku (ak je viac, použijeme tú s najväčším podielom)
+    const mainOrderId = orderAllocations[0].id;
+
+    // Krok 4: Získaj detaily zákazky
+    const order = await getFlowiiOrder(mainOrderId);
+    
+    if (!order || !order.relationships?.type?.data) {
+      console.log(`⚠️ Zákazka ${mainOrderId} nemá priradený typ`);
+      return { type: '', subtype: '' };
+    }
+
+    const typeId = order.relationships.type.data.id;
+    
+    // Krok 5: Získaj názov typu
+    const typeName = await getFlowiiOrderType(typeId);
+
+    // Krok 6: Zisti či má podtyp (parent)
+    let subtypeName = '';
+    let parentTypeName = typeName;
+
+    // Ak má typ parent, tak je to vlastne podtyp
+    if (order.relationships.type.data.relationships?.parent?.data) {
+      const parentTypeId = order.relationships.type.data.relationships.parent.data.id;
+      parentTypeName = await getFlowiiOrderType(parentTypeId);
+      subtypeName = typeName; // aktuálny typ je vlastne podtyp
+    }
+
+    console.log(`  📋 Typ zákazky: ${parentTypeName} / ${subtypeName || '(bez podtypu)'}`);
+    return { type: parentTypeName, subtype: subtypeName };
+
+  } catch (error) {
+    console.error(`❌ Chyba pri získavaní typu zákazky pre faktúru ${invoiceNumber}:`, error.response?.data || error.message);
+    return { type: '', subtype: '' };
+  }
+};
+
 // Mapovanie Flowii faktúry na Google Sheets riadok
 const mapFlowiiInvoiceToSheetRow = (invoice, partner, included) => {
   const attrs = invoice.attributes;
   
-  // Vytvor prázdny riadok s 49 stĺpcami (A-AW)
-  const row = new Array(49).fill('');
+  // Vytvor prázdny riadok s 51 stĺpcami (A-AY)
+  const row = new Array(51).fill('');
   
   // Základné údaje faktúry
   row[COLUMNS.CISLO] = attrs['serial-nr'] || '';
@@ -1657,7 +1812,7 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
       
       console.log(`  Sumy: ${sumaBezDPH.toFixed(2)} EUR (bez DPH), ${sumaSDPH.toFixed(2)} EUR (s DPH)`);
       
-      const row = new Array(49).fill('');
+      const row = new Array(51).fill('');
       row[0] = cislo;
       row[1] = 'Faktúra';
       row[2] = toSlovakDate(get('dateAccounting'));
@@ -1708,6 +1863,15 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     invoicesToAdd.sort((a, b) => b.cisloNum - a.cisloNum);
     console.log(`🔢 Zoradené faktúry (najnovšie prvé): ${invoicesToAdd.map(inv => inv.cislo).join(', ')}`);
     
+    // KROK B2: Doplň typ a podtyp zákazky pre každú faktúru
+    console.log(`🏷️ Zisťujem typy a podtypy zákazok pre ${invoicesToAdd.length} faktúr...`);
+    for (const invoice of invoicesToAdd) {
+      const orderInfo = await getOrderTypeAndSubtypeForInvoice(invoice.cislo);
+      invoice.row[COLUMNS.TYP_ZAKAZKY] = orderInfo.type || '';
+      invoice.row[COLUMNS.PODTYP_ZAKAZKY] = orderInfo.subtype || '';
+      await delay(300); // Rate limiting
+    }
+    
     // KROK C: Pridaj faktúry do Sheets - POZOR: Vkladáme v OPAČNOM poradí!
     // Každá nová sa vloží na riadok 2, takže najstaršiu dáme PRVÚ, najnovšiu POSLEDNÚ
     for (let i = invoicesToAdd.length - 1; i >= 0; i--) {
@@ -1727,7 +1891,7 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
       
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: 'Data!A2:AW2',
+        range: 'Data!A2:AY2', // Rozšírené na AY (51 stĺpcov)
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [invoice.row] }
       });
