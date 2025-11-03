@@ -1703,6 +1703,67 @@ const getFlowiiDocument = async (documentId) => {
   }
 };
 
+// Získanie typu a podtypu zákazky podľa čísla zákazky
+const getOrderTypeAndSubtypeForOrderNumber = async (orderNumber) => {
+  try {
+    if (!orderNumber) {
+      return { type: '', subtype: '' };
+    }
+    
+    const token = await getFlowiiToken();
+    
+    // Vyhľadaj zákazku podľa čísla
+    const searchResponse = await axios.get(
+      `${process.env.FLOWII_API_URL}/orders?companyId=${process.env.FLOWII_COMPANY_ID}&filter[search-text]=${orderNumber}&page[size]=10`,
+      {
+        headers: {
+          'Api-Key': process.env.FLOWII_API_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+
+    const orders = searchResponse.data.data || [];
+    const order = orders.find(ord => ord.attributes['serial-nr'] === orderNumber);
+
+    if (!order) {
+      console.log(`⚠️ Zákazka ${orderNumber} nenájdená cez Flowii API`);
+      return { type: '', subtype: '' };
+    }
+
+    // Získaj detaily zákazky
+    const orderDetails = await getFlowiiOrder(order.id);
+    
+    if (!orderDetails || !orderDetails.relationships?.type?.data) {
+      console.log(`⚠️ Zákazka ${orderNumber} nemá priradený typ`);
+      return { type: '', subtype: '' };
+    }
+
+    const typeId = orderDetails.relationships.type.data.id;
+    
+    // Získaj názov typu
+    const typeName = await getFlowiiOrderType(typeId);
+
+    // Zisti či má podtyp (parent)
+    let subtypeName = '';
+    let parentTypeName = typeName;
+
+    // Ak má typ parent, tak je to vlastne podtyp
+    if (orderDetails.relationships.type.data.relationships?.parent?.data) {
+      const parentTypeId = orderDetails.relationships.type.data.relationships.parent.data.id;
+      parentTypeName = await getFlowiiOrderType(parentTypeId);
+      subtypeName = typeName; // aktuálny typ je vlastne podtyp
+    }
+
+    console.log(`  📋 Zákazka ${orderNumber}: ${parentTypeName} / ${subtypeName || '(bez podtypu)'}`);
+    return { type: parentTypeName, subtype: subtypeName };
+
+  } catch (error) {
+    console.error(`❌ Chyba pri získavaní typu zákazky pre zákazku ${orderNumber}:`, error.response?.data || error.message);
+    return { type: '', subtype: '' };
+  }
+};
+
 // Získanie typu a podtypu zákazky pre faktúru
 const getOrderTypeAndSubtypeForInvoice = async (invoiceNumber) => {
   try {
@@ -1893,6 +1954,9 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
         continue;
       }
       
+      // Extrahuj číslo zákazky (ak existuje)
+      const cisloZakazky = get('numberOrder');
+      
       // Kontrola 1: Existuje už v Sheets?
       const exists = rows && rows.some(row => row[COLUMNS.CISLO] === cislo);
       if (exists) {
@@ -2010,8 +2074,11 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
       row[39] = sumaBezDPH.toFixed(2).replace('.', ',');
       row[40] = sumaSDPH.toFixed(2).replace('.', ',');
       
+      // Číslo zákazky (stĺpec 46 = CISLO_ZAKAZKY)
+      row[46] = cisloZakazky || '';
+      
       // Pridaj do zoznamu na spracovanie (ešte NEVKLADAJ do Sheets!)
-      invoicesToAdd.push({ cislo, cisloNum, row });
+      invoicesToAdd.push({ cislo, cisloNum, cisloZakazky, row });
     }
     
     // KROK B: Zoraď faktúry od najnovšej po najstaršiu (podľa čísla)
@@ -2071,11 +2138,22 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
       
       for (let i = 0; i < newInvoices.length; i++) {
         const invoiceNumber = newInvoices[i][COLUMNS.CISLO];
+        const cisloZakazky = newInvoices[i][COLUMNS.CISLO_ZAKAZKY];
         const rowIndex = i + 2; // Riadok 2 = prvá faktúra
         
         try {
-          console.log(`  🔍 [${i+1}/${newInvoices.length}] Zisťujem typ pre faktúru ${invoiceNumber}...`);
-          const orderInfo = await getOrderTypeAndSubtypeForInvoice(invoiceNumber);
+          console.log(`  🔍 [${i+1}/${newInvoices.length}] Faktúra ${invoiceNumber}, Zákazka: ${cisloZakazky || 'N/A'}`);
+          
+          let orderInfo = { type: '', subtype: '' };
+          
+          // Ak máme číslo zákazky, použi ho priamo
+          if (cisloZakazky) {
+            orderInfo = await getOrderTypeAndSubtypeForOrderNumber(cisloZakazky);
+          } else {
+            // Inak skús hľadať cez faktúru (pomalšie)
+            console.log(`  ⚠️ Zákazka nie je priradená, skúsim hľadať cez faktúru...`);
+            orderInfo = await getOrderTypeAndSubtypeForInvoice(invoiceNumber);
+          }
           
           if (orderInfo.type || orderInfo.subtype) {
             // Aktualizuj Google Sheets
