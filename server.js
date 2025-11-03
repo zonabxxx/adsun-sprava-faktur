@@ -209,7 +209,9 @@ const rowToFaktura = (row) => {
     podkategoria: row[COLUMNS.PODKATEGORIA] || '',
     cislo_zakazky: row[COLUMNS.CISLO_ZAKAZKY] || '',
     stredisko: row[COLUMNS.STREDISKO] || '',
-    uvodny_text: row[COLUMNS.UVODNY_TEXT] || ''
+    uvodny_text: row[COLUMNS.UVODNY_TEXT] || '',
+    typ_zakazky: row[COLUMNS.TYP_ZAKAZKY] || '',
+    podtyp_zakazky: row[COLUMNS.PODTYP_ZAKAZKY] || ''
   };
 };
 
