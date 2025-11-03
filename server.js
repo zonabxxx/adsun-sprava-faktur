@@ -1521,6 +1521,17 @@ const getFlowiiOrders = async (createdFrom = null) => {
 // Helper pre rate limiting - čakanie medzi requestmi
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Helper funkcia na konverziu čísla stĺpca na písmeno (0=A, 1=B, ..., 25=Z, 26=AA, ...)
+const getColumnLetter = (columnIndex) => {
+  let letter = '';
+  let num = columnIndex;
+  while (num >= 0) {
+    letter = String.fromCharCode((num % 26) + 65) + letter;
+    num = Math.floor(num / 26) - 1;
+  }
+  return letter;
+};
+
 // Získanie dokumentov (faktúr) pre konkrétnu Order s rate limiting
 const getFlowiiOrderDocuments = async (orderId) => {
   const token = await getFlowiiToken();
@@ -2007,15 +2018,6 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     invoicesToAdd.sort((a, b) => b.cisloNum - a.cisloNum);
     console.log(`🔢 Zoradené faktúry (najnovšie prvé): ${invoicesToAdd.map(inv => inv.cislo).join(', ')}`);
     
-    // KROK B2: Doplň typ a podtyp zákazky pre každú faktúru
-    console.log(`🏷️ Zisťujem typy a podtypy zákazok pre ${invoicesToAdd.length} faktúr...`);
-    for (const invoice of invoicesToAdd) {
-      const orderInfo = await getOrderTypeAndSubtypeForInvoice(invoice.cislo);
-      invoice.row[COLUMNS.TYP_ZAKAZKY] = orderInfo.type || '';
-      invoice.row[COLUMNS.PODTYP_ZAKAZKY] = orderInfo.subtype || '';
-      await delay(300); // Rate limiting
-    }
-    
     // KROK C: Pridaj faktúry do Sheets - POZOR: Vkladáme v OPAČNOM poradí!
     // Každá nová sa vloží na riadok 2, takže najstaršiu dáme PRVÚ, najnovšiu POSLEDNÚ
     for (let i = invoicesToAdd.length - 1; i >= 0; i--) {
@@ -2055,11 +2057,48 @@ app.post('/api/sync/flowii', authenticateApiKey, async (req, res) => {
     
     console.log(`✅ Synchronizácia dokončená: ${newInvoices.length} nových faktúr`);
     
+    // Odošli odpoveď HNEĎ (aby ChatGPT nemusel čakať)
     res.json({
       status: 'OK',
-      message: `Synchronizácia úspešná`,
+      message: `Synchronizácia úspešná. Typy a podtypy zákaziek sa dopĺňajú na pozadí.`,
       synchronized: newInvoices.length,
       invoices: newInvoices.map(row => row[COLUMNS.CISLO])
+    });
+    
+    // BACKGROUND: Doplň typy a podtypy pre novo pridané faktúry
+    (async () => {
+      console.log(`🔄 [BACKGROUND] Spúšťam dopĺňanie typov a podtypov pre ${newInvoices.length} faktúr...`);
+      
+      for (let i = 0; i < newInvoices.length; i++) {
+        const invoiceNumber = newInvoices[i][COLUMNS.CISLO];
+        const rowIndex = i + 2; // Riadok 2 = prvá faktúra
+        
+        try {
+          console.log(`  🔍 [${i+1}/${newInvoices.length}] Zisťujem typ pre faktúru ${invoiceNumber}...`);
+          const orderInfo = await getOrderTypeAndSubtypeForInvoice(invoiceNumber);
+          
+          if (orderInfo.type || orderInfo.subtype) {
+            // Aktualizuj Google Sheets
+            await sheets.spreadsheets.values.update({
+              spreadsheetId,
+              range: `Data!${getColumnLetter(COLUMNS.TYP_ZAKAZKY)}${rowIndex}:${getColumnLetter(COLUMNS.PODTYP_ZAKAZKY)}${rowIndex}`,
+              valueInputOption: 'USER_ENTERED',
+              requestBody: { values: [[orderInfo.type || '', orderInfo.subtype || '']] }
+            });
+            console.log(`  ✅ ${invoiceNumber}: ${orderInfo.type} / ${orderInfo.subtype || '(bez podtypu)'}`);
+          } else {
+            console.log(`  ⚠️ ${invoiceNumber}: Typ nenájdený`);
+          }
+          
+          await delay(500); // Rate limiting
+        } catch (error) {
+          console.error(`  ❌ Chyba pri dopĺňaní typu pre ${invoiceNumber}:`, error.message);
+        }
+      }
+      
+      console.log(`✅ [BACKGROUND] Dopĺňanie typov dokončené!`);
+    })().catch(err => {
+      console.error('❌ [BACKGROUND] Kritická chyba pri dopĺňaní typov:', err);
     });
     
   } catch (error) {
