@@ -64,6 +64,98 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/faktury/statistiky:
+    get:
+      operationId: getStatistiky
+      summary: Agregované štatistiky faktúr
+      description: |
+        Vráti agregované štatistiky faktúr podľa zvolenej kategórie.
+        Tento endpoint je optimalizovaný pre analýzu veľkého množstva dát bez nutnosti načítať všetky faktúry.
+        Ideálny pre vytvorenie grafov a prehľadov v ChatGPT.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: rok
+          in: query
+          description: Rok vystavenia vo formáte YYYY
+          schema:
+            type: string
+          example: "2025"
+        - name: mesiac
+          in: query
+          description: Mesiac vystavenia vo formáte YYYY-MM
+          schema:
+            type: string
+          example: "2025-10"
+        - name: datum_od
+          in: query
+          description: Dátum od (YYYY-MM-DD)
+          schema:
+            type: string
+          example: "2025-01-01"
+        - name: datum_do
+          in: query
+          description: Dátum do (YYYY-MM-DD)
+          schema:
+            type: string
+          example: "2025-12-31"
+        - name: zaplatene
+          in: query
+          description: Filter na zaplatené/nezaplatené faktúry
+          schema:
+            type: string
+            enum: ["true", "false"]
+        - name: group_by
+          in: query
+          description: Pole podľa ktorého zoskupiť štatistiky
+          schema:
+            type: string
+            enum: ["typ_zakazky", "podtyp_zakazky", "typ_podtyp", "mesiac", "partner", "vystavil"]
+            default: "typ_zakazky"
+          example: "typ_zakazky"
+      responses:
+        '200':
+          description: Agregované štatistiky
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "OK"
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kategoria:
+                          type: string
+                          description: Názov kategórie (napr. "Inštalácia", "Polep auta")
+                        pocet:
+                          type: integer
+                          description: Počet faktúr v tejto kategórii
+                        obrat_celkom:
+                          type: number
+                          description: Celkový obrat s DPH
+                        obrat_s_dph:
+                          type: number
+                          description: Obrat s DPH
+                        obrat_bez_dph:
+                          type: number
+                          description: Obrat bez DPH
+                  count:
+                    type: integer
+                    description: Počet kategórií
+                  celkovy_obrat:
+                    type: number
+                    description: Celkový obrat zo všetkých kategórií
+                  celkovy_pocet:
+                    type: integer
+                    description: Celkový počet faktúr
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /api/faktury/{cislo}:
     get:
       operationId: getFakturaById

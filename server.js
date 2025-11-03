@@ -2135,6 +2135,130 @@ app.post('/api/sync/add-invoice', authenticateApiKey, async (req, res) => {
   }
 });
 
+// GET /api/faktury/statistiky - Agregované štatistiky faktúr
+app.get('/api/faktury/statistiky', authenticateApiKey, async (req, res) => {
+  try {
+    const { 
+      rok,
+      mesiac,
+      datum_od,
+      datum_do,
+      zaplatene,
+      group_by // 'typ_zakazky', 'podtyp_zakazky', 'mesiac', 'partner', 'vystavil'
+    } = req.query;
+    
+    const sheets = await getGoogleSheetsClient();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "Data!A:AY",
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length <= 1) {
+      return res.json({ status: 'OK', data: [], count: 0 });
+    }
+
+    let faktury = rows.slice(1)
+      .filter(row => row[COLUMNS.CISLO])
+      .map(row => rowToFaktura(row));
+
+    // Aplikuj filtre
+    if (rok) {
+      faktury = faktury.filter(f => {
+        if (!f.datum_vystavenia) return false;
+        const isoDate = parseSlovakDate(f.datum_vystavenia);
+        if (!isoDate) return false;
+        return isoDate.substring(0, 4) === rok;
+      });
+    }
+
+    if (mesiac) {
+      faktury = faktury.filter(f => {
+        if (!f.datum_vystavenia) return false;
+        const isoDate = parseSlovakDate(f.datum_vystavenia);
+        if (!isoDate) return false;
+        return isoDate.substring(0, 7) === mesiac;
+      });
+    }
+
+    if (datum_od) {
+      faktury = faktury.filter(f => f.datum_vystavenia >= datum_od);
+    }
+
+    if (datum_do) {
+      faktury = faktury.filter(f => f.datum_vystavenia <= datum_do);
+    }
+
+    if (zaplatene !== undefined) {
+      const jeZaplatene = zaplatene === 'true' || zaplatene === '1';
+      faktury = faktury.filter(f => 
+        jeZaplatene ? (f.datum_uhrady && f.datum_uhrady !== '') : (!f.datum_uhrady || f.datum_uhrady === '')
+      );
+    }
+
+    // Agregácia podľa group_by
+    const groupBy = group_by || 'typ_zakazky';
+    const stats = {};
+
+    faktury.forEach(f => {
+      let key = '';
+      
+      if (groupBy === 'typ_zakazky') {
+        key = f.typ_zakazky || 'Bez typu';
+      } else if (groupBy === 'podtyp_zakazky') {
+        key = f.podtyp_zakazky || 'Bez podtypu';
+      } else if (groupBy === 'typ_podtyp') {
+        // Kombinovaný kľúč: "Typ - Podtyp"
+        const typ = f.typ_zakazky || 'Bez typu';
+        const podtyp = f.podtyp_zakazky || 'Bez podtypu';
+        key = `${typ} - ${podtyp}`;
+      } else if (groupBy === 'mesiac') {
+        if (f.datum_vystavenia) {
+          const isoDate = parseSlovakDate(f.datum_vystavenia);
+          key = isoDate ? isoDate.substring(0, 7) : 'Neznámy';
+        } else {
+          key = 'Neznámy';
+        }
+      } else if (groupBy === 'partner') {
+        key = f.partner || 'Neznámy';
+      } else if (groupBy === 'vystavil') {
+        key = f.vystavil || 'Neznámy';
+      }
+
+      if (!stats[key]) {
+        stats[key] = {
+          kategoria: key,
+          pocet: 0,
+          obrat_celkom: 0,
+          obrat_s_dph: 0,
+          obrat_bez_dph: 0
+        };
+      }
+
+      stats[key].pocet += 1;
+      stats[key].obrat_s_dph += f.celkom_s_dph || 0;
+      stats[key].obrat_bez_dph += f.celkom_bez_dph || 0;
+      stats[key].obrat_celkom += f.celkom_s_dph || 0; // alias pre obrat_s_dph
+    });
+
+    // Konvertuj na array a zoraď podľa obratu
+    const data = Object.values(stats).sort((a, b) => b.obrat_celkom - a.obrat_celkom);
+
+    res.json({ 
+      status: 'OK', 
+      data,
+      count: data.length,
+      celkovy_obrat: data.reduce((sum, item) => sum + item.obrat_celkom, 0),
+      celkovy_pocet: data.reduce((sum, item) => sum + item.pocet, 0)
+    });
+  } catch (error) {
+    console.error('Error in GET /api/faktury/statistiky:', error);
+    res.status(500).json({ status: 'ERROR', message: error.message });
+  }
+});
+
 // Spustenie servera
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 Faktúry API beží na http://0.0.0.0:${PORT}`);
