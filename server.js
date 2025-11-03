@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const { google } = require('googleapis');
 const axios = require('axios');
 
@@ -17,6 +18,9 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'X-Faktury-API-Key']
 }));
 app.use(express.json());
+
+// Serve static files (pre openapi.yaml)
+app.use(express.static(__dirname));
 
 // Request logger - aby sme videli čo Railway volá
 app.use((req, res, next) => {
