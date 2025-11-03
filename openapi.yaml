@@ -164,6 +164,18 @@ paths:
           schema:
             type: string
           example: "2025"
+        - name: typ_zakazky
+          in: query
+          description: Typ zákazky (hľadá v reťazci, case-insensitive)
+          schema:
+            type: string
+          example: "Inštalácia"
+        - name: podtyp_zakazky
+          in: query
+          description: Podtyp zákazky (hľadá v reťazci, case-insensitive)
+          schema:
+            type: string
+          example: "Polep auta"
         - name: orderBy
           in: query
           description: Pole podľa ktorého zoradiť (napr. datum_splatnosti, celkom_s_dph, partner)
@@ -687,6 +699,14 @@ components:
         mena:
           type: string
           example: "EUR"
+        typ_zakazky:
+          type: string
+          description: "Typ zákazky (z Flowii order type)"
+          example: "Billboard"
+        podtyp_zakazky:
+          type: string
+          description: "Podtyp zákazky (z Flowii order subtype)"
+          example: "Inštalácia"
 
     Error:
       type: object

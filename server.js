@@ -356,7 +356,7 @@ app.get('/api/faktury', authenticateApiKey, async (req, res) => {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "Data!A:AW",
+      range: "Data!A:AY",
     });
 
     const rows = response.data.values;
@@ -389,6 +389,8 @@ app.get('/api/faktury/search', authenticateApiKey, async (req, res) => {
       max_suma,
       mesiac,
       rok,
+      typ_zakazky,
+      podtyp_zakazky,
       orderBy,
       direction
     } = req.query;
@@ -398,7 +400,7 @@ app.get('/api/faktury/search', authenticateApiKey, async (req, res) => {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "Data!A:AW",
+      range: "Data!A:AY",
     });
 
     const rows = response.data.values;
@@ -472,6 +474,18 @@ app.get('/api/faktury/search', authenticateApiKey, async (req, res) => {
       });
     }
 
+    if (typ_zakazky) {
+      data = data.filter(f => 
+        f.typ_zakazky && f.typ_zakazky.toLowerCase().includes(typ_zakazky.toLowerCase())
+      );
+    }
+
+    if (podtyp_zakazky) {
+      data = data.filter(f => 
+        f.podtyp_zakazky && f.podtyp_zakazky.toLowerCase().includes(podtyp_zakazky.toLowerCase())
+      );
+    }
+
     // Zoradenie
     if (orderBy) {
       const dir = direction === 'desc' ? -1 : 1;
@@ -516,7 +530,7 @@ app.get('/api/faktury/nezaplatene-compact', authenticateApiKey, async (req, res)
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "Data!A:AW",
+      range: "Data!A:AY",
     });
 
     const rows = response.data.values;
@@ -679,7 +693,7 @@ app.post('/api/faktury', authenticateApiKey, async (req, res) => {
 
     await sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: "Data!A:AW",
+      range: "Data!A:AY",
       valueInputOption: 'RAW',
       insertDataOption: 'INSERT_ROWS',
       resource: { values: [rowData] }
@@ -802,7 +816,7 @@ app.get('/api/statistiky', authenticateApiKey, async (req, res) => {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "Data!A:AW",
+      range: "Data!A:AY",
     });
 
     const rows = response.data.values;
@@ -934,7 +948,7 @@ app.get('/api/analytics/firmy', authenticateApiKey, async (req, res) => {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "Data!A:AW",
+      range: "Data!A:AY",
     });
 
     const rows = response.data.values;
@@ -1003,7 +1017,7 @@ app.get('/api/analytics/splatnost', authenticateApiKey, async (req, res) => {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "Data!A:AW",
+      range: "Data!A:AY",
     });
 
     const rows = response.data.values;
@@ -1087,7 +1101,7 @@ app.get('/api/analytics/obchodnici', authenticateApiKey, async (req, res) => {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "Data!A:AW",
+      range: "Data!A:AY",
     });
 
     const rows = response.data.values;
@@ -1164,7 +1178,7 @@ app.get('/api/analytics/mesacne', authenticateApiKey, async (req, res) => {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "Data!A:AW",
+      range: "Data!A:AY",
     });
 
     const rows = response.data.values;
@@ -1242,7 +1256,7 @@ app.get('/api/analytics/top-klienti', authenticateApiKey, async (req, res) => {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "Data!A:AW",
+      range: "Data!A:AY",
     });
 
     const rows = response.data.values;
@@ -2095,7 +2109,7 @@ app.post('/api/sync/add-invoice', authenticateApiKey, async (req, res) => {
       // Pridaj na koniec (pôvodné chovanie)
       await sheets.spreadsheets.values.append({
         spreadsheetId,
-        range: 'Data!A:AW',
+        range: 'Data!A:AY',
         valueInputOption: 'USER_ENTERED',
         requestBody: {
           values: [row]
